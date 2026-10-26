@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DONE, HOLDING, LANES, PENDING, WINDOW,
-  applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
+  announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
   type Chart, type Difficulty, type Judgment, type Note, type NoteType, type Score,
 } from "./engine";
 
@@ -24,7 +24,6 @@ export const CHIP: Record<NoteType, [string, string, string]> = {
 };
 const RADIUS: Record<NoteType, number> = { tap: 0.14, hold: 0.14, pop: 0.18 }; // in ring radii; tap radius ~= distance a chip travels in WINDOW.good, so touching the ring line = hittable
 const SFX_RATE: Record<Judgment, number> = { perfect: 1, great: 0.95, good: 0.85, miss: 1 };
-const MILESTONES = new Set([10, 20, 30, 50, 75, 100, 150, 200, 300]);
 
 type Fx =
   | { kind: "crumb"; x: number; y: number; vx: number; vy: number; color: string; size: number; at: number }
@@ -84,13 +83,16 @@ function burst(r: Run, x: number, y: number, color: string, n: number, speed: nu
     r.fx.push({ kind: "crumb", x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - speed * 0.3, color, size: 2 + Math.random() * 4, at: r.ctx.currentTime });
   }
 }
-function callout(hud: Hud, text: string, color: string) {
+function callout(hud: Hud, text: string, color: string, sub = "") {
   const el = hud.callout;
-  el.textContent = text; el.style.color = color;
-  el.classList.remove("animate-callout");
+  el.style.setProperty("--shout", color);
+  (el.firstElementChild as HTMLElement).textContent = text; (el.lastElementChild as HTMLElement).textContent = sub;
+  el.classList.remove("on");
   void el.offsetWidth; // restart the animation
-  el.classList.add("animate-callout");
+  el.classList.add("on");
 }
+const SHOUT_COLOR: Record<string, string> = { "FIRST BLOOD": "#ff7a3d", "COMBO BREAK": COLOR.miss, SHUTDOWN: COLOR.miss };
+const shout = (hud: Hud, text: string | null, sub: string) => { if (text) callout(hud, text, SHOUT_COLOR[text] ?? COLOR.perfect, sub); };
 function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, g: Geom, dt = 0) {
   const prev = r.score;
   const { state } = applyJudgment(prev, j, kind, dt);
@@ -100,7 +102,7 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   r.padHit[n.lane] = t; r.padColor[n.lane] = COLOR[j];
   if (j === "miss") {
     r.fx.push({ kind: "text", text: "MISS", x, y, color: COLOR.miss, at: t });
-    if (prev.combo >= 10) callout(hud, "COMBO BREAK", COLOR.miss);
+    shout(hud, announce(prev, state), `${prev.combo} COMBO LOST`);
     r.shake = Math.max(r.shake, 3);
     return;
   }
@@ -111,8 +113,8 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   burst(r, px, py, CHIP[kind === "tail" ? "hold" : kind][1], kind === "pop" ? 18 : 8, g.m * (kind === "pop" ? 0.9 : 0.5));
   r.pulse = 1;
   if (kind === "pop") r.shake = Math.max(r.shake, 8);
-  if (state.fever && !prev.fever) callout(hud, "FEVER!", COLOR.perfect);
-  else if (MILESTONES.has(state.combo)) callout(hud, `${state.combo} COMBO`, "#fff");
+  if (state.fever && !prev.fever) callout(hud, "FEVER!", COLOR.perfect, "SCORE ×2");
+  else shout(hud, announce(prev, state), state.combo >= 10 ? `${state.combo} COMBO` : "");
 }
 function update(r: Run, hud: Hud, now: number, g: Geom) {
   const notes = r.chart.notes;
@@ -399,7 +401,7 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
           <div data-hud="fever" className="mt-1.5 rounded-full bg-[#ffd93d] px-3 py-0.5 text-xs font-black text-black" style={{ display: "none" }}>FEVER ×2</div>
         </div>
       </div>
-      <div data-hud="callout" className="font-display pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-4xl whitespace-nowrap opacity-0 [text-shadow:0_4px_24px_rgba(0,0,0,.8)] sm:text-6xl" />
+      <div data-hud="callout" className="shout"><b /><small /></div>
 
       {phase === "ready" && (
         <button onClick={start} className={overlay}>

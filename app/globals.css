@@ -11,14 +11,6 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-bungee);
-  --animate-callout: callout 1s ease-out both;
-  @keyframes callout {
-    0% { opacity: 0; transform: scale(0.6); }
-    15% { opacity: 1; transform: scale(1.15); }
-    30% { transform: scale(1); }
-    70% { opacity: 1; transform: scale(1); }
-    100% { opacity: 0; transform: translateY(-30px) scale(1); }
-  }
 }
 
 body {
@@ -26,3 +18,44 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
+
+/* Announcer banner (MLBB kill-streak style). --shout is the accent, set inline per shout. */
+.shout {
+  --shout: #ffd93d;
+  position: absolute; left: 0; right: 0; top: 50%;
+  padding: 0.9rem 0 1rem; text-align: center; pointer-events: none; opacity: 0; overflow: hidden;
+  /* translucent on purpose: chips on the side lanes pass under it */
+  background: linear-gradient(90deg, transparent, rgba(11, 14, 26, 0.55) 18%, rgba(11, 14, 26, 0.7) 50%, rgba(11, 14, 26, 0.55) 82%, transparent);
+  border-block: 1px solid; border-image: linear-gradient(90deg, transparent 5%, var(--shout), transparent 95%) 1;
+}
+.shout::after { /* light sweep */
+  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(100deg, transparent 42%, rgba(255, 255, 255, 0.35) 50%, transparent 58%);
+}
+.shout b {
+  display: inline-block; font-family: var(--font-display); font-weight: 400;
+  font-size: clamp(1.9rem, 9vw, 5.5rem); line-height: 1; letter-spacing: 0.03em; white-space: nowrap; padding: 0 0.2em;
+  transform: skewX(-8deg);
+  background: linear-gradient(180deg, #fff8d6 0%, var(--shout) 48%, color-mix(in srgb, var(--shout) 55%, #000) 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 3px 0 rgba(0, 0, 0, 0.75)) drop-shadow(0 0 22px color-mix(in srgb, var(--shout) 55%, transparent));
+}
+.shout small { display: block; margin-top: 0.4rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4em; color: rgba(255, 255, 255, 0.75); }
+.shout small:empty { display: none; }
+.shout.on { animation: shout-band 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on::after { animation: shout-sweep 1.4s ease-in-out both; }
+.shout.on b { animation: shout-slam 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on small { animation: shout-sub 1.4s ease-out both; }
+@keyframes shout-band {
+  0% { opacity: 0; transform: translateY(-50%) scaleX(0.3); }
+  14% { opacity: 1; transform: translateY(-50%) scaleX(1); }
+  78% { opacity: 1; transform: translateY(-50%); }
+  100% { opacity: 0; transform: translateY(calc(-50% - 16px)); }
+}
+@keyframes shout-slam {
+  0% { opacity: 0; transform: skewX(-8deg) scale(2.4); }
+  16% { opacity: 1; transform: skewX(-8deg) scale(0.95); }
+  26%, 100% { transform: skewX(-8deg) scale(1); }
+}
+@keyframes shout-sweep { 0%, 18% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
+@keyframes shout-sub { 0%, 20% { opacity: 0; transform: translateY(6px); } 40%, 100% { opacity: 1; transform: none; } }

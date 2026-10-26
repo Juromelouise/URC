@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DONE, FEVER_COMBO, LANES, PENDING, accuracy, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, type Note } from "./engine.ts";
+import { DONE, FEVER_COMBO, LANES, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, type Judgment, type Note, type Score } from "./engine.ts";
 
 // 20s synthetic track. 0-12s: clicks every 0.5s (120 BPM), every 4th one loud, loud off-beat clicks at 5.25, 7.25, 7.75, 9.25.
 // 12-14.6s: a sustained tone with no clicks under it. 15-20s: clicks that speed up from 120 to ~130 BPM, which a rigid grid cannot follow.
@@ -117,4 +117,19 @@ test("score: multiplier, fever, life, grade, timing offset", () => {
   assert.equal(s.combo, 0); assert.equal(s.fever, false); assert.equal(s.life, 96); assert.equal(s.maxCombo, 26);
   assert.equal(grade(accuracy(s)), "S");
   assert.equal(grade(0.5), "C");
+});
+
+test("announcer: first blood once, streak ladder on the way up, shutdown only from legendary", () => {
+  const hit = (s: Score, j: Judgment = "perfect") => applyJudgment(s, j, "tap").state;
+  const said: string[] = [];
+  let s = hit(initialScore(), "miss"); // a whiff first does not spend first blood
+  for (let i = 0; i < 150; i++) { const n = hit(s); const a = announce(s, n); if (a) said.push(a); s = n; }
+  assert.deepEqual(said, ["FIRST BLOOD", "KILLING SPREE", "MEGA KILL", "UNSTOPPABLE", "MONSTER KILL", "GOD-LIKE", "LEGENDARY", "MANIAC", "MANIAC"]);
+  assert.equal(announce(s, hit(s, "miss")), "SHUTDOWN");
+  const broken = hit(s, "miss");
+  assert.equal(announce(broken, hit(broken)), null, "first blood again after a break");
+  let short = initialScore();
+  for (let i = 0; i < 12; i++) short = hit(short);
+  assert.equal(announce(short, hit(short, "miss")), "COMBO BREAK");
+  assert.equal(announce(hit(initialScore()), hit(hit(initialScore()), "miss")), null, "a 1-combo break is not worth shouting");
 });

@@ -65,7 +65,7 @@ export default function Home() {
           <p className="font-display text-4xl">{r.score.toLocaleString()}</p>
           {(isBest || r.miss === 0) && r.score > 0 && (
             <div className="flex gap-2">
-              {r.miss === 0 && <p className="rounded-full bg-[#5eead4] px-4 py-1 text-sm font-black text-black">FULL COMBO</p>}
+              {r.miss === 0 && <p className="rounded-full bg-[#5eead4] px-4 py-1 text-sm font-black text-black">SAVAGE · FULL COMBO</p>}
               {isBest && <p className="rounded-full bg-[#ffd93d] px-4 py-1 text-sm font-black text-black">NEW BEST!</p>}
             </div>
           )}

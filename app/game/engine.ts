@@ -287,3 +287,11 @@ export function accuracy(s: Score) {
 /** Mean timing error in seconds, positive = the player taps late. */
 export const meanOffset = (s: Score) => (s.dtN ? s.dtSum / s.dtN : 0);
 export const grade = (acc: number) => (acc >= 0.95 ? "S" : acc >= 0.85 ? "A" : acc >= 0.7 ? "B" : "C");
+
+/** MLBB-style announcer: a hit is a kill, the combo is the streak. Savage is the full-combo badge on the results screen. */
+export const STREAKS: Record<number, string> = { 10: "KILLING SPREE", 20: "MEGA KILL", 30: "UNSTOPPABLE", 40: "MONSTER KILL", 50: "GOD-LIKE", 75: "LEGENDARY", 100: "MANIAC" };
+export function announce(prev: Score, s: Score): string | null {
+  if (s.combo === 0) return prev.combo >= 75 ? "SHUTDOWN" : prev.combo >= 10 ? "COMBO BREAK" : null; // 75 = legendary and up
+  if (s.combo === 1) return prev.maxCombo ? null : "FIRST BLOOD";
+  return STREAKS[s.combo] ?? (s.combo > 100 && s.combo % 50 === 0 ? "MANIAC" : null); // past the ladder: maniac again every 50
+}
