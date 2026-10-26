@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  BASE, DONE, FEVER_COMBO, GRADES, HOLDING, LANES, MULT, PENDING, WINDOW,
-  announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
-  type Chart, type Difficulty, type Judgment, type Note, type NoteType, type Score,
+  DONE, FEVER_COMBO, HOLDING, LANES, PENDING, WINDOW,
+  announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt, streakLadder,
+  type Chart, type Difficulty, type Judgment, type Ladder, type Note, type NoteType, type Score,
 } from "./engine";
 
 export interface RunResult extends Score { failed: boolean }
@@ -12,6 +12,7 @@ export interface RunResult extends Score { failed: boolean }
 const SFX = ["crunch", "crinkle", "open", "pop"] as const;
 type Sfx = (typeof SFX)[number];
 const COUNTDOWN = 3;
+const SHOUT_SECONDS = 1.4; // length of the .shout animation in globals.css
 const SPAWN = 1.9; // chips start this many ring radii out
 // ponytail: fixed touch-latency guess; add a calibration screen if players report late hits
 const INPUT_LATENCY = 0.03;
@@ -42,6 +43,8 @@ interface Run {
   fx: Fx[]; padHit: Float64Array; padColor: string[]; // per lane: ctx time and colour of the last judgment
   pulse: number; shake: number; lastFrame: number; done: boolean; font: string;
   sync: number; // seconds the player hears audio late, from calibration
+  ladder: Ladder; // streak calls scaled to this chart
+  savageAt: number; // ctx time of the full-combo shout, -Infinity until then
 }
 type Phase = "loading" | "ready" | "playing" | "paused" | "error";
 
@@ -92,7 +95,7 @@ function callout(hud: Hud, text: string, color: string, sub = "") {
   void el.offsetWidth; // restart the animation
   el.classList.add("on");
 }
-const SHOUT_COLOR: Record<string, string> = { "FIRST BLOOD": "#ff7a3d", "COMBO BREAK": COLOR.miss, SHUTDOWN: COLOR.miss };
+const SHOUT_COLOR: Record<string, string> = { "FIRST BLOOD": "#ff7a3d", "COMBO BREAK": COLOR.miss, SHUTDOWN: COLOR.miss, MANIAC: "#f472b6", SAVAGE: COLOR.great };
 const shout = (hud: Hud, text: string | null, sub: string) => { if (text) callout(hud, text, SHOUT_COLOR[text] ?? COLOR.perfect, sub); };
 function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, g: Geom, dt = 0) {
   const prev = r.score;
@@ -103,7 +106,7 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   r.padHit[n.lane] = t; r.padColor[n.lane] = COLOR[j];
   if (j === "miss") {
     r.fx.push({ kind: "text", text: "MISS", x, y, color: COLOR.miss, at: t });
-    shout(hud, announce(prev, state), `${prev.combo} COMBO LOST`);
+    shout(hud, announce(prev, state, r.ladder), `${prev.combo} COMBO LOST`);
     r.shake = Math.max(r.shake, 3);
     return;
   }
@@ -114,8 +117,10 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   burst(r, px, py, CHIP[kind === "tail" ? "hold" : kind][1], kind === "pop" ? 18 : 8, g.m * (kind === "pop" ? 0.9 : 0.5));
   r.pulse = 1;
   if (kind === "pop") r.shake = Math.max(r.shake, 8);
-  if (state.fever && !prev.fever) callout(hud, "FEVER!", COLOR.perfect, "SCORE ×2");
-  else shout(hud, announce(prev, state), state.combo >= 10 ? `${state.combo} COMBO` : "");
+  // a streak call outranks fever starting on the same hit; fever rides along in the subtitle
+  const call = announce(prev, state, r.ladder), feverOn = state.fever && !prev.fever;
+  if (call) shout(hud, call, feverOn ? "FEVER · SCORE ×2" : state.combo >= r.ladder[0][0] ? `${state.combo} COMBO` : "");
+  else if (feverOn) callout(hud, "FEVER!", COLOR.perfect, "SCORE ×2");
 }
 function update(r: Run, hud: Hud, now: number, g: Geom) {
   const notes = r.chart.notes;
@@ -123,6 +128,10 @@ function update(r: Run, hud: Hud, now: number, g: Geom) {
   for (const [pid, i] of r.holds) {
     const n = notes[i];
     if (now >= n.t + n.dur) { r.holds.delete(pid); r.status[i] = DONE; award(r, hud, "perfect", "tail", n, g); play(r, "pop"); }
+  }
+  if (r.savageAt === -Infinity && !r.score.miss && notes.length && r.status.every((st) => st === DONE)) {
+    r.savageAt = r.ctx.currentTime; r.shake = Math.max(r.shake, 10);
+    callout(hud, "SAVAGE", SHOUT_COLOR.SAVAGE, "FULL COMBO");
   }
 }
 
@@ -291,6 +300,7 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
   const hud = useRef<Hud | null>(null);
   const onDoneRef = useRef(onDone);
   const [phase, setPhase] = useState<Phase>("loading");
+  const [ladder, setLadder] = useState<Ladder>(() => streakLadder([])); // replaced by the chart's own before the start screen shows
   useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
 
   useEffect(() => {
@@ -309,12 +319,13 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
           ctx, song: songBuf, sfx: Object.fromEntries(SFX.map((n, i) => [n, fx[i]])) as Record<Sfx, AudioBuffer>,
           chart, status: new Uint8Array(chart.notes.length), score: initialScore(), startAt: Infinity,
           holds: new Map(), fx: [], padHit: new Float64Array(LANES).fill(-1), padColor: Array(LANES).fill("#fff"),
-          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync,
+          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync, ladder: streakLadder(chart.notes), savageAt: -Infinity,
         };
+        setLadder(run.current.ladder);
         setPhase("ready");
       })
       .catch((e) => { console.error(e); if (!cancelled) setPhase("error"); });
-    return () => { cancelled = true; run.current = null; ctx.close(); };
+    return () => { cancelled = true; if (run.current) run.current.done = true; run.current = null; ctx.close(); }; // done: a delayed finish must not open results after a quit
   }, [song, difficulty, sync]);
 
   useEffect(() => {
@@ -351,7 +362,9 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
     src.buffer = r.song; src.connect(r.ctx.destination);
     r.startAt = r.ctx.currentTime + COUNTDOWN;
     src.start(r.startAt);
-    src.onended = () => finish(r, false, onDoneRef.current);
+    src.onended = () => { // hold the results until a full-combo shout has played out
+      setTimeout(() => finish(r, false, onDoneRef.current), Math.max(0, r.savageAt + SHOUT_SECONDS - r.ctx.currentTime) * 1000);
+    };
     r.source = src;
     setPhase("playing");
   };
@@ -386,11 +399,8 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
 
   const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[#0b0e1a]/70 p-6 text-center backdrop-blur-sm";
   const btn = "rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold tracking-widest text-white/80 backdrop-blur hover:bg-white/15";
-  const card = "flex flex-col gap-1.5 rounded-2xl border border-white/10 bg-white/5 p-4";
-  const cardTitle = "mb-1 text-[11px] font-bold tracking-[0.25em] text-white/50";
-  const tiers = ["perfect", "great", "good"] as const;
   const dot = (color: string) => <i className="mr-2 inline-block h-3 w-3 rounded-full align-middle" style={{ background: color }} />;
-  const tier = (j: Judgment) => <b style={{ color: COLOR[j] }}>{j[0].toUpperCase() + j.slice(1)}</b>;
+  const [firstAt, first] = ladder[0], [topAt, top] = ladder[ladder.length - 1];
   return (
     <div ref={rootRef} className="fixed inset-0 select-none overflow-hidden bg-[#0b0e1a] font-sans text-white">
       <canvas ref={canvasRef} className="h-full w-full touch-none" onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp} />
@@ -415,27 +425,17 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
           <div className="flex min-h-full flex-col items-center justify-center gap-5 p-6 text-center">
             <button className="font-display text-5xl text-[#ffd93d] [text-shadow:0_6px_30px_rgba(255,217,61,.35)] sm:text-7xl">TAP TO START</button>
             <span className="text-xs font-bold tracking-[0.3em] text-white/50">{song.toUpperCase()} · {difficulty.toUpperCase()}</span>
-            <div className="grid w-full max-w-2xl gap-3 text-left text-sm text-white/80 sm:grid-cols-2">
-              <div className={card}>
-                <p className={cardTitle}>HOW TO PLAY</p>
-                <p>Chips fly in from the edge. When one reaches its pad on the ring, tap that pad.</p>
-                <p>{dot(CHIP.tap[1])}<b>Yellow chip</b>: one quick tap</p>
-                <p>{dot(CHIP.hold[1])}<b>Green chip</b>: press and keep holding until its trail is gone</p>
-                <p>{dot(CHIP.pop[1])}<b>Big orange chip</b>: tap it for double points</p>
-                <p className="mt-1">Right on the beat is a {tier("perfect")}. A little off is {tier("great")} or {tier("good")}. Way off is a {tier("miss")}.</p>
-                <p>Every hit heals you a little, every miss hurts. If your life bar runs out, the song ends early.</p>
-              </div>
-              <div className={card}>
-                <p className={cardTitle}>SCORING</p>
-                <p className="flex flex-wrap gap-x-3 font-bold">{tiers.map((j) => <span key={j} style={{ color: COLOR[j] }}>{j.toUpperCase()} {BASE[j]}</span>)}</p>
-                <p>Hit chips in a row to build a combo. The longer it gets, the more each chip is worth, up to ×{MULT.max}. One miss and it starts over.</p>
-                <p>Reach a {FEVER_COMBO} combo for <b style={{ color: COLOR.perfect }}>FEVER</b>: double points on everything until you miss.</p>
-                <p>Hold a green chip all the way to the end for a +{BASE.tail} bonus.</p>
-                <p className="mt-1 flex flex-wrap gap-x-3">
-                  <span>Your rank, by how cleanly you hit:</span>
-                  {GRADES.map(([g, min]) => <b key={g} style={{ color: GRADE_COLOR[g] }}>{g} {Math.round(min * 100)}%+</b>)}
-                </p>
-              </div>
+            <div className="flex flex-col items-center gap-3 text-white/80">
+              <p className="text-lg">Tap the pad when a chip lands on it.</p>
+              <p className="flex flex-wrap justify-center gap-x-5 gap-y-1 text-sm font-bold">
+                <span>{dot(CHIP.tap[1])}Tap</span>
+                <span>{dot(CHIP.hold[1])}Hold to the end</span>
+                <span>{dot(CHIP.pop[1])}Pop ×2</span>
+              </p>
+              <p className="text-sm text-white/60">Hit {FEVER_COMBO} in a row for <b style={{ color: COLOR.perfect }}>FEVER ×2</b>. Misses cost life.</p>
+              <p className="text-sm text-white/60">
+                Hit {firstAt} in a row for <b style={{ color: COLOR.perfect }}>{first}</b>, {topAt} for <b style={{ color: COLOR.perfect }}>{top}</b>. Clear with no misses for <b style={{ color: COLOR.great }}>SAVAGE</b>.
+              </p>
             </div>
           </div>
         </div>

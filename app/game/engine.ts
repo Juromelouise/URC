@@ -292,9 +292,21 @@ export const GRADES: [string, number][] = [["S", 0.95], ["A", 0.85], ["B", 0.7]]
 export const grade = (acc: number) => GRADES.find(([, min]) => acc >= min)?.[0] ?? "C";
 
 /** MLBB-style announcer: a hit is a kill, the combo is the streak. Savage is the full-combo badge on the results screen. */
-export const STREAKS: Record<number, string> = { 10: "KILLING SPREE", 20: "MEGA KILL", 30: "UNSTOPPABLE", 40: "MONSTER KILL", 50: "GOD-LIKE", 75: "LEGENDARY", 100: "MANIAC" };
-export function announce(prev: Score, s: Score): string | null {
-  if (s.combo === 0) return prev.combo >= 75 ? "SHUTDOWN" : prev.combo >= 10 ? "COMBO BREAK" : null; // 75 = legendary and up
+export type Ladder = [at: number, call: string][];
+const STREAKS: Ladder = [[10, "KILLING SPREE"], [20, "MEGA KILL"], [30, "UNSTOPPABLE"], [40, "MONSTER KILL"], [50, "GOD-LIKE"], [75, "LEGENDARY"], [100, "MANIAC"]];
+/** MANIAC needs this share of the chart's best possible combo in one unbroken streak. Raise it to make the top call rarer. */
+export const MANIAC_SHARE = 0.5;
+/** The streak ladder scaled to one chart, so every call is reachable on short and easy charts too. Thresholds start at 2 (1 is first blood) and always rise. */
+export function streakLadder(notes: Note[]): Ladder {
+  const best = notes.length + notes.filter((n) => n.type === "hold").length; // a hold's tail is a second hit
+  const scale = (best * MANIAC_SHARE) / STREAKS[STREAKS.length - 1][0];
+  let prev = 1;
+  return STREAKS.map(([at, call]) => [(prev = Math.max(prev + 1, Math.round(at * scale))), call]);
+}
+export function announce(prev: Score, s: Score, ladder: Ladder): string | null {
+  const spree = ladder[0][0], legendary = ladder[ladder.length - 2][0], maniac = ladder[ladder.length - 1][0];
+  if (s.combo === 0) return prev.combo >= legendary ? "SHUTDOWN" : prev.combo >= spree ? "COMBO BREAK" : null;
   if (s.combo === 1) return prev.maxCombo ? null : "FIRST BLOOD";
-  return STREAKS[s.combo] ?? (s.combo > 100 && s.combo % 50 === 0 ? "MANIAC" : null); // past the ladder: maniac again every 50
+  const every = Math.max(1, Math.round(maniac / 2)); // past the ladder: maniac again every half-ladder
+  return ladder.find(([at]) => at === s.combo)?.[1] ?? (s.combo > maniac && (s.combo - maniac) % every === 0 ? "MANIAC" : null);
 }
