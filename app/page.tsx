@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import Game, { COLOR, type RunResult } from "./game/Game";
+import Game, { COLOR, GRADE_COLOR, type RunResult } from "./game/Game";
 import { accuracy, grade, meanOffset, type Difficulty } from "./game/engine";
 
 const SONGS = ["English", "INDO"];
@@ -9,7 +9,6 @@ const DIFFS: Difficulty[] = ["easy", "normal", "hard"];
 const DIFF_HINT: Record<Difficulty, string> = { easy: "The strong beats only, no double taps", normal: "Most beats, one double tap per bar", hard: "Every beat and every strong off-beat" };
 const BEST_KEY = "crunch-circle-best-v3";
 const SYNC_KEY = "crunch-circle-sync-ms";
-const GRADE_COLOR: Record<string, string> = { S: "#ffd93d", A: "#4ade80", B: "#5eead4", C: "rgba(255,255,255,0.5)" };
 type Best = Record<string, { score: number; grade: string }>;
 type Screen = { name: "menu" } | { name: "play"; song: string } | { name: "results"; song: string; result: RunResult; isBest: boolean; syncAtRun: number };
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DONE, FEVER_COMBO, LANES, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, type Judgment, type Note, type Score } from "./engine.ts";
+import { BASE, DONE, FEVER_COMBO, GRADES, LANES, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, type Judgment, type Note, type Score } from "./engine.ts";
 
 // 20s synthetic track. 0-12s: clicks every 0.5s (120 BPM), every 4th one loud, loud off-beat clicks at 5.25, 7.25, 7.75, 9.25.
 // 12-14.6s: a sustained tone with no clicks under it. 15-20s: clicks that speed up from 120 to ~130 BPM, which a rigid grid cannot follow.
@@ -111,12 +111,15 @@ test("score: multiplier, fever, life, grade, timing offset", () => {
   const pop = applyJudgment(s, "perfect", "pop", -0.02);
   assert.equal(pop.gained, 200 * 3 * 2); // pop x2, combo 25 => x3, fever x2
   assert.equal(applyJudgment(pop.state, "great", "tap").gained, 70 * 3 * 2);
+  assert.equal(applyJudgment(pop.state, "perfect", "tail").gained, BASE.tail * 3 * 2);
   const tail = applyJudgment(pop.state, "perfect", "tail", 5).state; // tails are not timed
   assert.ok(Math.abs(meanOffset(tail) - (0.02 * 25 - 0.02) / 26) < 1e-9);
   s = applyJudgment(pop.state, "miss", "tap").state;
   assert.equal(s.combo, 0); assert.equal(s.fever, false); assert.equal(s.life, 96); assert.equal(s.maxCombo, 26);
   assert.equal(grade(accuracy(s)), "S");
   assert.equal(grade(0.5), "C");
+  assert.deepEqual(GRADES.map(([, min]) => grade(min)), ["S", "A", "B"]); // the thresholds the start screen shows are the ones that apply
+  assert.equal(grade(GRADES[0][1] - 0.001), "A");
 });
 
 test("announcer: first blood once, streak ladder on the way up, shutdown only from legendary", () => {

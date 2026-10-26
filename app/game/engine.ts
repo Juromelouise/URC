@@ -258,14 +258,16 @@ export interface Score {
 }
 export const initialScore = (): Score => ({ score: 0, combo: 0, maxCombo: 0, life: 100, fever: false, perfect: 0, great: 0, good: 0, miss: 0, dtSum: 0, dtN: 0 });
 export const FEVER_COMBO = 25;
-const BASE = { perfect: 100, great: 70, good: 40 };
+export const BASE = { perfect: 100, great: 70, good: 40, tail: 50 };
+export const LIFE = { hit: 2, miss: 4 };
+export const MULT = { step: 10, max: 4 }; // +1x every `step` combo, capped at `max`
 
 export function applyJudgment(s: Score, j: Judgment, kind: NoteType | "tail", dt = 0): { state: Score; gained: number } {
   if (j === "miss") {
-    return { gained: 0, state: { ...s, combo: 0, fever: false, life: Math.max(0, s.life - 4), miss: s.miss + 1 } };
+    return { gained: 0, state: { ...s, combo: 0, fever: false, life: Math.max(0, s.life - LIFE.miss), miss: s.miss + 1 } };
   }
-  const mult = Math.min(4, 1 + Math.floor(s.combo / 10)) * (s.fever ? 2 : 1);
-  const base = kind === "tail" ? 50 : BASE[j] * (kind === "pop" ? 2 : 1);
+  const mult = Math.min(MULT.max, 1 + Math.floor(s.combo / MULT.step)) * (s.fever ? 2 : 1);
+  const base = kind === "tail" ? BASE.tail : BASE[j] * (kind === "pop" ? 2 : 1);
   const gained = base * mult;
   const combo = s.combo + 1;
   const timed = kind !== "tail";
@@ -273,7 +275,7 @@ export function applyJudgment(s: Score, j: Judgment, kind: NoteType | "tail", dt
     gained,
     state: {
       ...s, score: s.score + gained, combo, maxCombo: Math.max(s.maxCombo, combo),
-      fever: s.fever || combo >= FEVER_COMBO, life: Math.min(100, s.life + 2),
+      fever: s.fever || combo >= FEVER_COMBO, life: Math.min(100, s.life + LIFE.hit),
       perfect: s.perfect + (j === "perfect" ? 1 : 0), great: s.great + (j === "great" ? 1 : 0), good: s.good + (j === "good" ? 1 : 0),
       dtSum: s.dtSum + (timed ? dt : 0), dtN: s.dtN + (timed ? 1 : 0),
     },
@@ -286,7 +288,8 @@ export function accuracy(s: Score) {
 }
 /** Mean timing error in seconds, positive = the player taps late. */
 export const meanOffset = (s: Score) => (s.dtN ? s.dtSum / s.dtN : 0);
-export const grade = (acc: number) => (acc >= 0.95 ? "S" : acc >= 0.85 ? "A" : acc >= 0.7 ? "B" : "C");
+export const GRADES: [string, number][] = [["S", 0.95], ["A", 0.85], ["B", 0.7]]; // grade and its minimum accuracy; below the last is a C
+export const grade = (acc: number) => GRADES.find(([, min]) => acc >= min)?.[0] ?? "C";
 
 /** MLBB-style announcer: a hit is a kill, the combo is the streak. Savage is the full-combo badge on the results screen. */
 export const STREAKS: Record<number, string> = { 10: "KILLING SPREE", 20: "MEGA KILL", 30: "UNSTOPPABLE", 40: "MONSTER KILL", 50: "GOD-LIKE", 75: "LEGENDARY", 100: "MANIAC" };

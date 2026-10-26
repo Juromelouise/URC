@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  DONE, HOLDING, LANES, PENDING, WINDOW,
+  BASE, DONE, FEVER_COMBO, GRADES, HOLDING, LANES, MULT, PENDING, WINDOW,
   announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
   type Chart, type Difficulty, type Judgment, type Note, type NoteType, type Score,
 } from "./engine";
@@ -16,6 +16,7 @@ const SPAWN = 1.9; // chips start this many ring radii out
 // ponytail: fixed touch-latency guess; add a calibration screen if players report late hits
 const INPUT_LATENCY = 0.03;
 export const COLOR: Record<Judgment, string> = { perfect: "#ffd93d", great: "#5eead4", good: "#c4b5fd", miss: "#fb7185" };
+export const GRADE_COLOR: Record<string, string> = { S: "#ffd93d", A: "#4ade80", B: "#5eead4", C: "rgba(255,255,255,0.5)" };
 /** light, mid, edge */
 export const CHIP: Record<NoteType, [string, string, string]> = {
   tap: ["#ffe59a", "#f5b52e", "#a35d08"],
@@ -385,6 +386,11 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
 
   const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[#0b0e1a]/70 p-6 text-center backdrop-blur-sm";
   const btn = "rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold tracking-widest text-white/80 backdrop-blur hover:bg-white/15";
+  const card = "flex flex-col gap-1.5 rounded-2xl border border-white/10 bg-white/5 p-4";
+  const cardTitle = "mb-1 text-[11px] font-bold tracking-[0.25em] text-white/50";
+  const tiers = ["perfect", "great", "good"] as const;
+  const dot = (color: string) => <i className="mr-2 inline-block h-3 w-3 rounded-full align-middle" style={{ background: color }} />;
+  const tier = (j: Judgment) => <b style={{ color: COLOR[j] }}>{j[0].toUpperCase() + j.slice(1)}</b>;
   return (
     <div ref={rootRef} className="fixed inset-0 select-none overflow-hidden bg-[#0b0e1a] font-sans text-white">
       <canvas ref={canvasRef} className="h-full w-full touch-none" onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp} />
@@ -404,16 +410,35 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
       <div data-hud="callout" className="shout"><b /><small /></div>
 
       {phase === "ready" && (
-        <button onClick={start} className={overlay}>
-          <span className="font-display text-5xl text-[#ffd93d] [text-shadow:0_6px_30px_rgba(255,217,61,.35)] sm:text-7xl">TAP TO START</span>
-          <span className="text-xs font-bold tracking-[0.3em] text-white/50">{song.toUpperCase()} · {difficulty.toUpperCase()}</span>
-          <span className="max-w-sm text-white/80">Chips ride the beat down the lanes. Tap the pad as each one lands.</span>
-          <span className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-white/70">
-            <span><i className="mr-2 inline-block h-3 w-3 rounded-full bg-[#f5b52e] align-middle" />Tap</span>
-            <span><i className="mr-2 inline-block h-3 w-3 rounded-full bg-[#4ade80] align-middle" />Hold until the tail ends</span>
-            <span><i className="mr-2 inline-block h-3 w-3 rounded-full bg-[#ff6b2c] align-middle" />Pop, double points</span>
-          </span>
-        </button>
+        // the whole overlay starts the run; the button inside gives the keyboard a target, its click bubbles up
+        <div onClick={start} className="absolute inset-0 cursor-pointer overflow-y-auto bg-[#0b0e1a]/70 backdrop-blur-sm">
+          <div className="flex min-h-full flex-col items-center justify-center gap-5 p-6 text-center">
+            <button className="font-display text-5xl text-[#ffd93d] [text-shadow:0_6px_30px_rgba(255,217,61,.35)] sm:text-7xl">TAP TO START</button>
+            <span className="text-xs font-bold tracking-[0.3em] text-white/50">{song.toUpperCase()} · {difficulty.toUpperCase()}</span>
+            <div className="grid w-full max-w-2xl gap-3 text-left text-sm text-white/80 sm:grid-cols-2">
+              <div className={card}>
+                <p className={cardTitle}>HOW TO PLAY</p>
+                <p>Chips fly in from the edge. When one reaches its pad on the ring, tap that pad.</p>
+                <p>{dot(CHIP.tap[1])}<b>Yellow chip</b>: one quick tap</p>
+                <p>{dot(CHIP.hold[1])}<b>Green chip</b>: press and keep holding until its trail is gone</p>
+                <p>{dot(CHIP.pop[1])}<b>Big orange chip</b>: tap it for double points</p>
+                <p className="mt-1">Right on the beat is a {tier("perfect")}. A little off is {tier("great")} or {tier("good")}. Way off is a {tier("miss")}.</p>
+                <p>Every hit heals you a little, every miss hurts. If your life bar runs out, the song ends early.</p>
+              </div>
+              <div className={card}>
+                <p className={cardTitle}>SCORING</p>
+                <p className="flex flex-wrap gap-x-3 font-bold">{tiers.map((j) => <span key={j} style={{ color: COLOR[j] }}>{j.toUpperCase()} {BASE[j]}</span>)}</p>
+                <p>Hit chips in a row to build a combo. The longer it gets, the more each chip is worth, up to ×{MULT.max}. One miss and it starts over.</p>
+                <p>Reach a {FEVER_COMBO} combo for <b style={{ color: COLOR.perfect }}>FEVER</b>: double points on everything until you miss.</p>
+                <p>Hold a green chip all the way to the end for a +{BASE.tail} bonus.</p>
+                <p className="mt-1 flex flex-wrap gap-x-3">
+                  <span>Your rank, by how cleanly you hit:</span>
+                  {GRADES.map(([g, min]) => <b key={g} style={{ color: GRADE_COLOR[g] }}>{g} {Math.round(min * 100)}%+</b>)}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
       {phase === "paused" && (
         <div className={overlay}>
