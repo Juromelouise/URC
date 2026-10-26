@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DONE, HOLDING, LANES, PENDING, WINDOW,
-  applyJudgment, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
-  type Chart, type Judgment, type Note, type NoteType, type Score,
+  applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt,
+  type Chart, type Difficulty, type Judgment, type Note, type NoteType, type Score,
 } from "./engine";
 
 export interface RunResult extends Score { failed: boolean }
@@ -22,7 +22,7 @@ export const CHIP: Record<NoteType, [string, string, string]> = {
   hold: ["#c6f7d0", "#4ade80", "#15803d"],
   pop: ["#ffc29b", "#ff6b2c", "#9a2f0f"],
 };
-const RADIUS: Record<NoteType, number> = { tap: 0.2, hold: 0.2, pop: 0.26 }; // in ring radii
+const RADIUS: Record<NoteType, number> = { tap: 0.14, hold: 0.14, pop: 0.18 }; // in ring radii; tap radius ~= distance a chip travels in WINDOW.good, so touching the ring line = hittable
 const SFX_RATE: Record<Judgment, number> = { perfect: 1, great: 0.95, good: 0.85, miss: 1 };
 const MILESTONES = new Set([10, 20, 30, 50, 75, 100, 150, 200, 300]);
 
@@ -41,11 +41,12 @@ interface Run {
   holds: Map<number, number>; // pointerId -> note index
   fx: Fx[]; padHit: Float64Array; padColor: string[]; // per lane: ctx time and colour of the last judgment
   pulse: number; shake: number; lastFrame: number; done: boolean; font: string;
+  sync: number; // seconds the player hears audio late, from calibration
 }
 type Phase = "loading" | "ready" | "playing" | "paused" | "error";
 
-/** Song position as heard: audio clock minus output latency. */
-const songTime = (r: Run) => r.ctx.currentTime - r.startAt - r.ctx.baseLatency - (r.ctx.outputLatency || 0);
+/** Song position as heard: audio clock minus output latency and the player's sync offset. */
+const songTime = (r: Run) => r.ctx.currentTime - r.startAt - r.ctx.baseLatency - (r.ctx.outputLatency || 0) - r.sync;
 
 function downmix(b: AudioBuffer) {
   const out = new Float32Array(b.length);
@@ -92,7 +93,7 @@ function callout(hud: Hud, text: string, color: string) {
 }
 function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, g: Geom, dt = 0) {
   const prev = r.score;
-  const { state } = applyJudgment(prev, j, kind);
+  const { state } = applyJudgment(prev, j, kind, dt);
   r.score = state;
   const t = r.ctx.currentTime;
   const [x, y] = laneXY(g, n.lane, g.R * 0.68);
@@ -191,9 +192,9 @@ function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResu
   r.pulse = Math.max(0, r.pulse - dt * 4);
   r.shake = Math.max(0, r.shake - dt * 40);
   const s = r.score, fever = s.fever, p = r.pulse;
-  const bp = now >= 0 ? (now - r.chart.offset) / (60 / r.chart.bpm) : -1;
-  const beat = bp >= 0 ? Math.max(0, 1 - (bp % 1) * 3) : 0;
-  const down = bp >= 0 && Math.floor(bp) % 4 === 0;
+  const { k, frac } = now >= 0 ? beatAt(r.chart.beats, now) : { k: -1, frac: 0 };
+  const beat = k >= 0 ? Math.max(0, 1 - frac * 3) : 0; // 1 on each tracked beat, decays over a third of a beat
+  const down = k >= 0 && (k + 4 - r.chart.downbeat) % 4 === 0;
 
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.translate((Math.random() - 0.5) * r.shake * 2, (Math.random() - 0.5) * r.shake * 2);
@@ -278,7 +279,9 @@ function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResu
   hud.progress.style.width = `${started && now > 0 ? Math.min(100, (100 * now) / r.song.duration) : 0}%`;
 }
 
-export default function Game({ song, onDone, onQuit }: { song: string; onDone: (r: RunResult) => void; onQuit: () => void }) {
+export default function Game({ song, difficulty, sync, onDone, onQuit }: {
+  song: string; difficulty: Difficulty; sync: number /* seconds, positive = audio is heard late */; onDone: (r: RunResult) => void; onQuit: () => void;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const run = useRef<Run | null>(null);
@@ -298,18 +301,18 @@ export default function Game({ song, onDone, onQuit }: { song: string; onDone: (
     Promise.all([load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
       .then(([songBuf, ...fx]) => {
         if (cancelled) return;
-        const chart = buildChart(downmix(songBuf), songBuf.sampleRate, song);
+        const chart = buildChart(downmix(songBuf), songBuf.sampleRate, song, difficulty);
         run.current = {
           ctx, song: songBuf, sfx: Object.fromEntries(SFX.map((n, i) => [n, fx[i]])) as Record<Sfx, AudioBuffer>,
           chart, status: new Uint8Array(chart.notes.length), score: initialScore(), startAt: Infinity,
           holds: new Map(), fx: [], padHit: new Float64Array(LANES).fill(-1), padColor: Array(LANES).fill("#fff"),
-          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui",
+          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync,
         };
         setPhase("ready");
       })
       .catch((e) => { console.error(e); if (!cancelled) setPhase("error"); });
     return () => { cancelled = true; run.current = null; ctx.close(); };
-  }, [song]);
+  }, [song, difficulty, sync]);
 
   useEffect(() => {
     if (phase === "loading" || phase === "error" || !rootRef.current) return;
@@ -374,8 +377,8 @@ export default function Game({ song, onDone, onQuit }: { song: string; onDone: (
     if (i === undefined) return;
     r.holds.delete(e.pointerId); r.status[i] = DONE;
     const n = r.chart.notes[i], { g } = laneOf(e);
+    // letting go early just forfeits the tail bonus; the head was already judged, so no second verdict on the same chip
     if (holdComplete(n, songTime(r) - INPUT_LATENCY)) { award(r, h, "perfect", "tail", n, g); play(r, "pop"); }
-    else { award(r, h, "miss", "tail", n, g); if (r.score.life <= 0) finish(r, true, onDoneRef.current); }
   };
 
   const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[#0b0e1a]/70 p-6 text-center backdrop-blur-sm";
@@ -401,6 +404,7 @@ export default function Game({ song, onDone, onQuit }: { song: string; onDone: (
       {phase === "ready" && (
         <button onClick={start} className={overlay}>
           <span className="font-display text-5xl text-[#ffd93d] [text-shadow:0_6px_30px_rgba(255,217,61,.35)] sm:text-7xl">TAP TO START</span>
+          <span className="text-xs font-bold tracking-[0.3em] text-white/50">{song.toUpperCase()} · {difficulty.toUpperCase()}</span>
           <span className="max-w-sm text-white/80">Chips ride the beat down the lanes. Tap the pad as each one lands.</span>
           <span className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm text-white/70">
             <span><i className="mr-2 inline-block h-3 w-3 rounded-full bg-[#f5b52e] align-middle" />Tap</span>
