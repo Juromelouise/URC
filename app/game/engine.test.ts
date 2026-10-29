@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BASE, DONE, FEVER_COMBO, GRADES, LANES, MANIAC_SHARE, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, streakLadder, type Judgment, type Note, type Score } from "./engine.ts";
+import { BASE, DONE, FEVER_COMBO, GRADES, LANES, MANIAC_SHARE, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, parseLrc, streakLadder, sung, type Judgment, type Note, type Score } from "./engine.ts";
 
 // 20s synthetic track. 0-12s: clicks every 0.5s (120 BPM), every 4th one loud, loud off-beat clicks at 5.25, 7.25, 7.75, 9.25.
 // 12-14.6s: a sustained tone with no clicks under it. 15-20s: clicks that speed up from 120 to ~130 BPM, which a rigid grid cannot follow.
@@ -156,4 +156,19 @@ test("streak ladder scales to each chart so maniac is always reachable", () => {
   }
   const tiny = streakLadder(taps(4)); // the ladder still rises when the chart is too short to space it
   assert.deepEqual(tiny.map(([at]) => at), [2, 3, 4, 5, 6, 7, 8]);
+});
+
+test("lrc lyrics parse to sorted timed lines; tags are skipped, repeated stamps repeat the line", () => {
+  const lrc = "[ar:Someone]\r\n[00:12.50]second line\n[00:03.00][01:05.25]chorus line\n[00:20.00]\nno stamp here";
+  assert.deepEqual(parseLrc(lrc), [[3, "chorus line", []], [12.5, "second line", []], [20, "", []], [65.25, "chorus line", []]]);
+});
+
+test("enhanced lrc keeps word stamps as character offsets, [offset:] moves everything earlier, and sung() fills word by word", () => {
+  const L = parseLrc("[offset:+500]\n[00:10.50]<00:10.50>ab <00:11.50>cd<00:12.50>\n[00:20.00]plain line\n[00:24.00]");
+  assert.deepEqual(L[0], [10, "ab cd", [[10, 0], [11, 3], [12, 5]]]);
+  assert.equal(sung(L, 0, 9), 0); // before the first word
+  assert.equal(sung(L, 0, 10.5), 30); // halfway through "ab ": 1.5 of 5 characters
+  assert.equal(sung(L, 0, 11), 60); // "cd" just starting
+  assert.equal(sung(L, 0, 13), 100); // past the end stamp
+  assert.equal(sung(L, 1, 21.5), 50); // no word stamps: even fill until the next line
 });

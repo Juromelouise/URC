@@ -291,6 +291,42 @@ export const meanOffset = (s: Score) => (s.dtN ? s.dtSum / s.dtN : 0);
 export const GRADES: [string, number][] = [["S", 0.95], ["A", 0.85], ["B", 0.7]]; // grade and its minimum accuracy; below the last is a C
 export const grade = (acc: number) => GRADES.find(([, min]) => acc >= min)?.[0] ?? "C";
 
+/** A lyric line: when it starts, its text, and when each word starts as [time, character offset]; no words for plain .lrc. */
+export type Lyric = [t: number, text: string, words: [t: number, at: number][]];
+const lrcTime = (m: RegExpMatchArray) => Number(m[1]) * 60 + Number(m[2]);
+/**
+ * Timed lines from an .lrc lyrics file, sorted by time: "[mm:ss.xx]text" with several stamps per line allowed, or the enhanced
+ * "[mm:ss.xx]<mm:ss.xx>word <mm:ss.xx>word<mm:ss.xx>" with a stamp before each word and one where the singing of the line ends.
+ * [offset:+ms] shows every line that much earlier (standard LRC). Other tags like [ar:...] are skipped; an empty line clears the display.
+ */
+export function parseLrc(src: string): Lyric[] {
+  const out: Lyric[] = [];
+  let offset = 0;
+  for (const line of src.split(/\r?\n/)) {
+    const off = /\[offset:\s*([+-]?\d+)\]/i.exec(line);
+    if (off) offset = Number(off[1]) / 1000;
+    const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)].map(lrcTime), words: [number, number][] = [];
+    let text = "";
+    for (const part of line.replace(/\[[^\]]*\]/g, "").split(/(<\d+:\d+(?:\.\d+)?>)/)) {
+      const w = /^<(\d+):(\d+(?:\.\d+)?)>$/.exec(part);
+      if (w) words.push([lrcTime(w), text.length]); else text += part;
+    }
+    const lead = text.length - text.trimStart().length;
+    text = text.trim();
+    // word stamps are written for the line's first stamp; a repeat of the line shifts them along
+    for (const t of stamps) out.push([t, text, words.map(([wt, at]) => [wt + t - stamps[0], Math.min(text.length, Math.max(0, at - lead))])]);
+  }
+  return out.map(([t, text, words]): Lyric => [t - offset, text, words.map(([wt, at]) => [wt - offset, at])]).sort((a, b) => a[0] - b[0]);
+}
+/** How much of lyric line i is sung at `now`, 0..100 by characters: word by word when the line has word stamps, else evenly until the next line. */
+export function sung(lyrics: Lyric[], i: number, now: number) {
+  const [t, text, words] = lyrics[i], k = words.findLastIndex(([wt]) => wt <= now);
+  if (!words.length) return Math.min(100, (100 * (now - t)) / ((lyrics[i + 1]?.[0] ?? t + 4) - t));
+  if (k < 0 || !text.length) return 0;
+  const [wt, at] = words[k], [nt, nat] = words[k + 1] ?? [wt + 0.5, text.length]; // no end stamp: the last word takes half a second
+  return (100 * (at + (nat - at) * Math.min(1, (now - wt) / Math.max(1e-3, nt - wt)))) / text.length;
+}
+
 /** MLBB-style announcer: a hit is a kill, the combo is the streak. Savage is the full-combo badge on the results screen. */
 export type Ladder = [at: number, call: string][];
 const STREAKS: Ladder = [[10, "KILLING SPREE"], [20, "MEGA KILL"], [30, "UNSTOPPABLE"], [40, "MONSTER KILL"], [50, "GOD-LIKE"], [75, "LEGENDARY"], [100, "MANIAC"]];

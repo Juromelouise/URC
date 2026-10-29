@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DONE, FEVER_COMBO, HOLDING, LANES, PENDING, WINDOW,
-  announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt, streakLadder,
-  type Chart, type Difficulty, type Judgment, type Ladder, type Note, type NoteType, type Score,
+  announce, applyJudgment, beatAt, buildChart, expired, holdComplete, initialScore, judge, laneAngle, laneAt, parseLrc, streakLadder, sung,
+  type Chart, type Difficulty, type Judgment, type Ladder, type Lyric, type Note, type NoteType, type Score,
 } from "./engine";
 
 export interface RunResult extends Score { failed: boolean }
@@ -20,20 +20,23 @@ export const COLOR: Record<Judgment, string> = { perfect: "#ffd93d", great: "#5e
 export const GRADE_COLOR: Record<string, string> = { S: "#ffd93d", A: "#4ade80", B: "#5eead4", C: "rgba(255,255,255,0.5)" };
 /** light, mid, edge */
 export const CHIP: Record<NoteType, [string, string, string]> = {
-  tap: ["#ffe59a", "#f5b52e", "#a35d08"],
+  tap: ["#ffe08a", "#f7a531", "#b4470c"],
   hold: ["#c6f7d0", "#4ade80", "#15803d"],
   pop: ["#ffc29b", "#ff6b2c", "#9a2f0f"],
 };
+const GLOW: Record<NoteType, string> = { tap: "#ff6a00", hold: "#22c55e", pop: "#ff2d1a" };
 const RADIUS: Record<NoteType, number> = { tap: 0.14, hold: 0.14, pop: 0.18 }; // in ring radii; tap radius ~= distance a chip travels in WINDOW.good, so touching the ring line = hittable
 const SFX_RATE: Record<Judgment, number> = { perfect: 1, great: 0.95, good: 0.85, miss: 1 };
 
 type Fx =
   | { kind: "crumb"; x: number; y: number; vx: number; vy: number; color: string; size: number; at: number }
   | { kind: "ring"; x: number; y: number; color: string; at: number }
+  | { kind: "spark"; x: number; y: number; vx: number; vy: number; at: number }
   | { kind: "text"; text: string; sub?: string; x: number; y: number; color: string; at: number };
+const FX_LIFE: Record<Fx["kind"], number> = { crumb: 0.6, ring: 0.4, spark: 0.35, text: 0.7 };
 
 interface Geom { cx: number; cy: number; R: number; m: number }
-interface Hud { score: HTMLElement; life: HTMLElement; lifeNum: HTMLElement; fever: HTMLElement; callout: HTMLElement; progress: HTMLElement }
+interface Hud { score: HTMLElement; life: HTMLElement; lifeNum: HTMLElement; fever: HTMLElement; combo: HTMLElement; lyrics: HTMLElement; callout: HTMLElement; progress: HTMLElement }
 interface Run {
   ctx: AudioContext; song: AudioBuffer; sfx: Record<Sfx, AudioBuffer>;
   chart: Chart; status: Uint8Array; score: Score;
@@ -45,6 +48,7 @@ interface Run {
   sync: number; // seconds the player hears audio late, from calibration
   ladder: Ladder; // streak calls scaled to this chart
   savageAt: number; // ctx time of the full-combo shout, -Infinity until then
+  lyrics: Lyric[]; // from public/lyrics/<song>.lrc, empty when there is none
 }
 type Phase = "loading" | "ready" | "playing" | "paused" | "error";
 
@@ -67,7 +71,7 @@ const laneXY = (g: Geom, lane: number, dist: number) =>
   [g.cx + Math.cos(laneAngle(lane)) * dist, g.cy + Math.sin(laneAngle(lane)) * dist] as const;
 const hudOf = (root: HTMLElement): Hud => {
   const q = (k: string) => root.querySelector(`[data-hud=${k}]`) as HTMLElement;
-  return { score: q("score"), life: q("life"), lifeNum: q("lifenum"), fever: q("fever"), callout: q("callout"), progress: q("progress") };
+  return { score: q("score"), life: q("life"), lifeNum: q("lifenum"), fever: q("fever"), combo: q("combo"), lyrics: q("lyrics"), callout: q("callout"), progress: q("progress") };
 };
 
 function finish(r: Run, failed: boolean, onDone: (res: RunResult) => void) {
@@ -82,21 +86,33 @@ function play(r: Run, name: Sfx, rate = 1) {
   s.connect(r.ctx.destination); s.start();
 }
 function burst(r: Run, x: number, y: number, color: string, n: number, speed: number) {
+  const at = r.ctx.currentTime;
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, v = speed * (0.4 + Math.random());
-    r.fx.push({ kind: "crumb", x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - speed * 0.3, color, size: 2 + Math.random() * 4, at: r.ctx.currentTime });
+    r.fx.push({ kind: "crumb", x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - speed * 0.3, color, size: 2 + Math.random() * 4, at });
+    const b = Math.random() * Math.PI * 2, u = speed * (1 + Math.random() * 1.5);
+    r.fx.push({ kind: "spark", x, y, vx: Math.cos(b) * u, vy: Math.sin(b) * u, at });
   }
 }
-function callout(hud: Hud, text: string, color: string, sub = "") {
-  const el = hud.callout;
+/** accent colour and emblem tier (0 swords, 1 adds wings, 2 adds flames); unlisted calls are gold tier 0 */
+const SHOUT: Record<string, [color: string, tier: number]> = {
+  "FIRST BLOOD": ["#ff7a3d", 0], "COMBO BREAK": [COLOR.miss, 0], SHUTDOWN: [COLOR.miss, 0],
+  "MONSTER KILL": [COLOR.perfect, 1], "GOD-LIKE": [COLOR.perfect, 1], LEGENDARY: [COLOR.perfect, 2], MANIAC: ["#f472b6", 2], SAVAGE: [COLOR.great, 2],
+};
+/** MLBB kill plate: your combo on the left, the chip you took (or lost to) on the right; no chip shows a star. */
+function callout(hud: Hud, text: string | null, sub: string, combo: number, chip?: NoteType, lost = false) {
+  if (!text) return;
+  const el = hud.callout, [color, tier] = SHOUT[text] ?? [COLOR.perfect, 0];
   el.style.setProperty("--shout", color);
-  (el.firstElementChild as HTMLElement).textContent = text; (el.lastElementChild as HTMLElement).textContent = sub;
+  if (chip) CHIP[chip].forEach((c, i) => el.style.setProperty(`--c${i}`, c));
+  el.dataset.tier = String(tier);
+  el.classList.toggle("star", !chip); el.classList.toggle("lost", lost);
+  const set = (sel: string, v: string) => { (el.querySelector(sel) as HTMLElement).textContent = v; };
+  set("b", text); set(".you", String(combo)); set("small", sub);
   el.classList.remove("on");
   void el.offsetWidth; // restart the animation
   el.classList.add("on");
 }
-const SHOUT_COLOR: Record<string, string> = { "FIRST BLOOD": "#ff7a3d", "COMBO BREAK": COLOR.miss, SHUTDOWN: COLOR.miss, MANIAC: "#f472b6", SAVAGE: COLOR.great };
-const shout = (hud: Hud, text: string | null, sub: string) => { if (text) callout(hud, text, SHOUT_COLOR[text] ?? COLOR.perfect, sub); };
 function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, g: Geom, dt = 0) {
   const prev = r.score;
   const { state } = applyJudgment(prev, j, kind, dt);
@@ -106,7 +122,7 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   r.padHit[n.lane] = t; r.padColor[n.lane] = COLOR[j];
   if (j === "miss") {
     r.fx.push({ kind: "text", text: "MISS", x, y, color: COLOR.miss, at: t });
-    shout(hud, announce(prev, state, r.ladder), `${prev.combo} COMBO LOST`);
+    callout(hud, announce(prev, state, r.ladder), "COMBO LOST", prev.combo, n.type, true);
     r.shake = Math.max(r.shake, 3);
     return;
   }
@@ -119,8 +135,8 @@ function award(r: Run, hud: Hud, j: Judgment, kind: NoteType | "tail", n: Note, 
   if (kind === "pop") r.shake = Math.max(r.shake, 8);
   // a streak call outranks fever starting on the same hit; fever rides along in the subtitle
   const call = announce(prev, state, r.ladder), feverOn = state.fever && !prev.fever;
-  if (call) shout(hud, call, feverOn ? "FEVER · SCORE ×2" : state.combo >= r.ladder[0][0] ? `${state.combo} COMBO` : "");
-  else if (feverOn) callout(hud, "FEVER!", COLOR.perfect, "SCORE ×2");
+  if (call) callout(hud, call, feverOn ? "FEVER · SCORE ×2" : "", state.combo, n.type);
+  else if (feverOn) callout(hud, "FEVER!", "SCORE ×2", state.combo, n.type);
 }
 function update(r: Run, hud: Hud, now: number, g: Geom) {
   const notes = r.chart.notes;
@@ -131,58 +147,145 @@ function update(r: Run, hud: Hud, now: number, g: Geom) {
   }
   if (r.savageAt === -Infinity && !r.score.miss && notes.length && r.status.every((st) => st === DONE)) {
     r.savageAt = r.ctx.currentTime; r.shake = Math.max(r.shake, 10);
-    callout(hud, "SAVAGE", SHOUT_COLOR.SAVAGE, "FULL COMBO");
+    callout(hud, "SAVAGE", "FULL COMBO", r.score.maxCombo);
   }
 }
 
-function chipPath(c: CanvasRenderingContext2D, rad: number) {
-  c.beginPath();
-  for (let i = 0; i <= 36; i++) {
-    const a = (i / 36) * Math.PI * 2, rr = rad * (1 + 0.05 * Math.sin(a * 5 + 1));
-    const x = Math.cos(a) * rr, y = Math.sin(a) * rr * 0.84;
-    if (i) c.lineTo(x, y); else c.moveTo(x, y);
-  }
-  c.closePath();
+const SPRITE = 96; // chip radius in sprite pixels; a sprite is 4 radii across so the glow, shadow and blur fit
+const BLUR = [5, 10, 18]; // sprite pixels, for the out-of-focus chips flying past; never sharp, so they can't pass for notes
+const sprites = new Map<string, HTMLCanvasElement>();
+/** Crisp colours per type, RGB: cheese, sour cream & onion, spicy. */
+const CRISP: Record<NoteType, { base: number[]; powder: number[]; fleck: number[] }> = {
+  tap: { base: [246, 188, 74], powder: [242, 132, 38], fleck: [196, 58, 18] },
+  hold: { base: [206, 218, 112], powder: [236, 238, 196], fleck: [46, 128, 40] },
+  pop: { base: [240, 124, 46], powder: [226, 64, 24], fleck: [140, 18, 8] },
+};
+const TOAST = [138, 60, 16];
+const hash = (x: number, y: number) => {
+  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+/** Smooth value noise, 0..1. */
+function noise(x: number, y: number) {
+  const xi = Math.floor(x), yi = Math.floor(y), u = x - xi, v = y - yi, su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
+  const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+  return a + (b - a) * su + (c - a) * sv + (a - b - c + d) * su * sv;
 }
-function drawChip(c: CanvasRenderingContext2D, x: number, y: number, rad: number, type: NoteType, rot: number, holding: boolean) {
-  const [light, mid, edge] = CHIP[type];
+const fbm = (x: number, y: number) => noise(x, y) * 0.5 + noise(x * 2, y * 2) * 0.25 + noise(x * 4, y * 4) * 0.125 + noise(x * 8, y * 8) * 0.0625;
+/** Signed distance to a hexagon with inradius r (Inigo Quilez). */
+function sdHex(x: number, y: number, r: number) {
+  x = Math.abs(x); y = Math.abs(y);
+  const t = 2 * Math.min(-0.866025404 * x + 0.5 * y, 0);
+  x += t * 0.866025404; y -= t * 0.5;
+  x -= Math.max(-0.577350269 * r, Math.min(0.577350269 * r, x)); y -= r;
+  return Math.hypot(x, y) * Math.sign(y);
+}
+/**
+ * A chip pre-rendered once per type: a bump-mapped crisp (curl, air blisters, grain, bevelled rim) lit from the top left,
+ * toasted at the edge and on the blisters, dusted with powder and flecks. Blurred copies are the debris.
+ */
+function chipSprite(type: NoteType, blur = 0): HTMLCanvasElement {
+  const key = type + blur, cached = sprites.get(key);
+  if (cached) return cached;
+  const cv = document.createElement("canvas"), c = cv.getContext("2d") as CanvasRenderingContext2D, rad = SPRITE;
+  cv.width = cv.height = rad * 4;
+  sprites.set(key, cv);
+  if (blur) { c.filter = `blur(${blur}px)`; c.drawImage(chipSprite(type), 0, 0); return cv; } // ponytail: no canvas filter (older Safari) = sharp debris
+  const { base, powder, fleck } = CRISP[type], o = Math.random() * 100, N = Math.ceil(rad * 2.4), mid = N / 2;
+  const blisters = Array.from({ length: 40 }, () => {
+    const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * 0.8;
+    return { x: Math.cos(a) * d, y: Math.sin(a) * d, r: 0.04 + Math.random() * 0.12, h: 0.03 + Math.random() * 0.06 };
+  });
+  // height field and edge distance, in chip radii
+  const H = new Float32Array(N * N), D = new Float32Array(N * N), top = new Float32Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const x = (i - mid) / rad, y = (j - mid) / rad, k = j * N + i;
+    D[k] = sdHex(x, y, 0.8) - 0.12 + (fbm(x * 2.5 + o, y * 2.5 + o) - 0.47) * 0.1; // rounded corners, unevenly snapped edge
+    let h = 0.16 * (x * x - 0.7 * y * y) - 0.05 * Math.max(0, 1 + D[k] / 0.07) ** 2 + fbm(x * 7 + o, y * 7) * 0.03; // curl, bevelled rim, grain
+    for (const b of blisters) {
+      const q = ((x - b.x) ** 2 + (y - b.y) ** 2) / (b.r * b.r);
+      if (q < 1) { h += b.h * (1 - q) ** 2; top[k] = Math.max(top[k], (1 - q) ** 2); }
+    }
+    H[k] = h;
+  }
+  const img = c.createImageData(N, N), px = img.data, L = [-0.4, -0.5, 0.77], V = [-0.21, -0.26, 0.94]; // light, and its half-vector with the viewer
+  for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
+    const k = j * N + i, a = Math.min(1, Math.max(0, 0.5 - D[k] * rad));
+    if (!a) continue;
+    const x = (i - mid) / rad, y = (j - mid) / rad;
+    const sx = ((H[k + 1] - H[k - 1]) * rad) / 2, sy = ((H[k + N] - H[k - N]) * rad) / 2, n = Math.hypot(sx, sy, 1);
+    const diff = Math.max(0, (-sx * L[0] - sy * L[1] + L[2]) / n), spec = Math.max(0, (-sx * V[0] - sy * V[1] + V[2]) / n) ** 40;
+    const ring = top[k] * (1 - top[k]) * 4; // blister rims brown, their puffed tops stay pale
+    const toast = Math.min(1, Math.max(0, 1 + D[k] / 0.16) ** 2 * 0.7 + ring * 0.25 + Math.max(0, fbm(x * 3 - o, y * 3 + o) - 0.5) * 0.6);
+    const dust = fbm(x * 5 - o, y * 5 + o) > 0.5 ? 0.35 : 0;
+    const flecks = noise(x * 45 + o, y * 45) * 0.6 + noise(x * 90, y * 90 + o) * 0.4 > 0.8 ? 0.6 : 0;
+    for (let ch = 0; ch < 3; ch++) {
+      let v = base[ch] + (powder[ch] - base[ch]) * dust;
+      v += (TOAST[ch] - v) * toast; v += (fleck[ch] - v) * flecks; v += top[k] * 18;
+      px[k * 4 + ch] = v * (0.5 + 0.65 * diff) + spec * 100;
+    }
+    px[k * 4 + 3] = a * 255;
+  }
+  const chip = document.createElement("canvas"), at = Math.floor((rad * 4 - N) / 2);
+  chip.width = chip.height = N;
+  (chip.getContext("2d") as CanvasRenderingContext2D).putImageData(img, 0, 0);
+  c.shadowColor = `${GLOW[type]}99`; c.shadowBlur = rad * 0.45; c.drawImage(chip, at, at); // a warm glow so it reads on the dark field
+  c.shadowColor = "rgba(0,0,0,0.55)"; c.shadowBlur = rad * 0.12; c.shadowOffsetX = rad * 0.05; c.shadowOffsetY = rad * 0.09;
+  c.drawImage(chip, at, at); // and a drop shadow under it
+  return cv;
+}
+function drawChip(c: CanvasRenderingContext2D, x: number, y: number, rad: number, type: NoteType, rot: number, holding: boolean, blur = 0) {
+  const img = chipSprite(type, blur), s = rad * 4;
   c.save();
   c.translate(x, y); c.rotate(rot);
-  if (type === "pop") { c.shadowColor = mid; c.shadowBlur = rad * 0.9; }
-  else { c.shadowColor = "rgba(0,0,0,0.45)"; c.shadowBlur = rad * 0.3; c.shadowOffsetY = rad * 0.12; }
-  chipPath(c, rad);
-  const grad = c.createRadialGradient(-rad * 0.3, -rad * 0.3, rad * 0.05, 0, 0, rad * 1.1);
-  grad.addColorStop(0, holding ? "#ffffff" : light); grad.addColorStop(1, holding ? light : mid);
-  c.fillStyle = grad; c.fill();
-  c.shadowBlur = 0; c.shadowOffsetY = 0;
-  c.lineWidth = Math.max(1.5, rad * 0.09); c.strokeStyle = edge; c.stroke();
-  c.fillStyle = edge; c.globalAlpha = 0.3;
-  for (const [sx, sy] of [[0.35, 0.1], [-0.15, 0.4], [0.1, -0.35], [-0.45, -0.05]]) { c.beginPath(); c.arc(sx * rad, sy * rad, rad * 0.06, 0, Math.PI * 2); c.fill(); }
-  c.globalAlpha = 1;
-  c.fillStyle = "rgba(255,255,255,0.55)";
-  c.beginPath(); c.ellipse(-rad * 0.38, -rad * 0.32, rad * 0.2, rad * 0.1, -0.7, 0, Math.PI * 2); c.fill();
+  c.drawImage(img, -s / 2, -s / 2, s, s);
+  if (holding) { c.globalCompositeOperation = "lighter"; c.globalAlpha *= 0.6; c.drawImage(img, -s / 2, -s / 2, s, s); }
   c.restore();
 }
+
+// backdrop: speed lines and out-of-focus chips flying out of the ring, each a pure function of time
+const LINES = Array.from({ length: 56 }, () => ({ a: Math.random() * Math.PI * 2, p: Math.random(), v: 0.3 + Math.random() * 0.5, w: 0.6 + Math.random() * 1.8, hue: 5 + Math.random() * 35 }));
+const DEBRIS = Array.from({ length: 12 }, (_, i) => ({ a: ((i + Math.random() * 0.7) / 12) * Math.PI * 2, p: Math.random(), v: 0.05 + Math.random() * 0.05, s: 0.5 + Math.random() * 0.7, rot: Math.random() * 6, spin: Math.random() - 0.5 }));
+function drawBackdrop(c: CanvasRenderingContext2D, g: Geom, w: number, h: number, t: number, glow: number, fever: boolean) {
+  const { cx, cy, R } = g, far = Math.hypot(w, h) / 2;
+  const bg = c.createRadialGradient(cx, cy, 0, cx, cy, far);
+  bg.addColorStop(0, fever ? "#3a2208" : "#1c1336"); bg.addColorStop(0.4, fever ? "#170a03" : "#0b0714"); bg.addColorStop(1, fever ? "#4d1a05" : "#350b08");
+  c.fillStyle = bg; c.fillRect(-20, -20, w + 40, h + 40);
+  c.globalCompositeOperation = "lighter";
+  if (glow > 0.01) { c.fillStyle = `rgba(255,60,30,${glow * 0.07})`; c.fillRect(-20, -20, w + 40, h + 40); }
+  for (const l of LINES) {
+    const q = (l.p + t * l.v * (fever ? 1.6 : 1)) % 1, d = R * 1.2 + q * q * far, len = far * (0.04 + q * 0.3);
+    const ca = Math.cos(l.a), sa = Math.sin(l.a), x0 = cx + ca * d, y0 = cy + sa * d, x1 = cx + ca * (d + len), y1 = cy + sa * (d + len);
+    const lg = c.createLinearGradient(x0, y0, x1, y1);
+    lg.addColorStop(0, `hsl(${l.hue} 100% 55% / 0)`); lg.addColorStop(1, `hsl(${l.hue + (fever ? 15 : 0)} 100% 60% / ${Math.min(1, q * 4) * (0.45 + glow * 0.3)})`);
+    c.strokeStyle = lg; c.lineWidth = l.w * (0.4 + q * 2.5);
+    c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+  }
+  c.globalCompositeOperation = "source-over";
+  for (const d of DEBRIS) {
+    const q = (d.p + t * d.v) % 1, dist = R * 2.3 + q * q * far;
+    c.globalAlpha = Math.min(1, q * 5) * 0.75;
+    drawChip(c, cx + Math.cos(d.a) * dist, cy + Math.sin(d.a) * dist, R * d.s * (0.15 + q * 0.85), "tap", d.rot + t * d.spin, false, BLUR[Math.min(2, Math.floor(q * 3))]);
+  }
+  c.globalAlpha = 1;
+}
 function drawPlate(c: CanvasRenderingContext2D, g: Geom, r: Run, p: number, beat: number, down: boolean, now: number) {
-  const { cx, cy, R } = g, s = r.score;
+  const { cx, cy, R } = g, fever = r.score.fever;
   const rad = R * 0.46 * (1 + p * 0.05);
   c.save();
-  if (s.fever) { c.shadowColor = "rgba(255,217,61,0.7)"; c.shadowBlur = 30 + beat * 20; }
-  const grad = c.createRadialGradient(cx, cy - rad * 0.4, rad * 0.1, cx, cy, rad);
-  grad.addColorStop(0, s.fever ? "#6b4a0c" : "#2a3058"); grad.addColorStop(1, s.fever ? "#2a1c04" : "#141833");
+  c.shadowColor = fever ? "rgba(255,217,61,0.8)" : "rgba(216,140,255,0.7)"; c.shadowBlur = 20 + beat * 20;
+  const grad = c.createRadialGradient(cx, cy, 0, cx, cy, rad);
+  grad.addColorStop(0, fever ? "#6b4a0c" : "#251d55"); grad.addColorStop(1, fever ? "#2a1c04" : "#0d0a22");
   c.fillStyle = grad; c.beginPath(); c.arc(cx, cy, rad, 0, Math.PI * 2); c.fill();
+  c.lineWidth = 3; c.strokeStyle = fever ? COLOR.perfect : `rgba(240,205,255,${0.7 + beat * (down ? 0.3 : 0.15)})`; c.stroke();
   c.restore();
-  c.lineWidth = 3; c.strokeStyle = s.fever ? COLOR.perfect : `rgba(255,255,255,${0.2 + beat * (down ? 0.5 : 0.25)})`;
-  c.beginPath(); c.arc(cx, cy, rad, 0, Math.PI * 2); c.stroke();
   c.textAlign = "center"; c.textBaseline = "middle";
   if (r.startAt !== Infinity && now < 0.6) {
     const go = now >= 0;
     c.fillStyle = go ? COLOR.perfect : "#fff"; c.font = `${rad * (go ? 0.8 : 1.1)}px ${r.font}`;
     c.fillText(go ? "GO!" : String(Math.ceil(-now)), cx, cy);
-  } else if (s.combo > 0) {
-    c.fillStyle = "#fff"; c.font = `${rad * 0.8}px ${r.font}`; c.fillText(String(s.combo), cx, cy - rad * 0.08);
-    c.fillStyle = "rgba(255,255,255,0.5)"; c.font = `${rad * 0.2}px ${r.font}`; c.fillText("COMBO", cx, cy + rad * 0.45);
-  }
+  } else { c.fillStyle = "#fff"; c.beginPath(); c.arc(cx, cy, Math.max(2, rad * 0.025), 0, Math.PI * 2); c.fill(); } // the combo is the .combo badge
 }
 
 function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResult) => void) {
@@ -210,30 +313,31 @@ function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResu
 
   c.setTransform(dpr, 0, 0, dpr, 0, 0);
   c.translate((Math.random() - 0.5) * r.shake * 2, (Math.random() - 0.5) * r.shake * 2);
-  const hue = fever ? 38 : 234; // fever: warm amber
-  const bg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * 0.75);
-  bg.addColorStop(0, `hsl(${hue} ${fever ? 60 : 42}% ${(fever ? 16 : 12) + beat * 3 + p * 4}%)`);
-  bg.addColorStop(1, `hsl(${hue} 45% ${fever ? 6 : 4}%)`);
-  c.fillStyle = bg; c.fillRect(-20, -20, w + 40, h + 40);
+  drawBackdrop(c, g, w, h, t, Math.max(p, beat * (down ? 1 : 0.5)), fever);
 
   // lanes, ring, pads
   for (let l = 0; l < LANES; l++) {
-    const [x0, y0] = laneXY(g, l, R * 1.12), [x1, y1] = laneXY(g, l, R * SPAWN * 1.1);
+    const [x0, y0] = laneXY(g, l, R * 0.5), [x1, y1] = laneXY(g, l, R * SPAWN * 1.4);
     const lg = c.createLinearGradient(x0, y0, x1, y1);
-    lg.addColorStop(0, `rgba(255,255,255,${0.14 + beat * 0.08})`); lg.addColorStop(1, "rgba(255,255,255,0)");
-    c.strokeStyle = lg; c.lineWidth = 2; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
+    lg.addColorStop(0, "rgba(255,210,230,0.04)"); lg.addColorStop(0.23, `rgba(255,210,230,${0.3 + beat * 0.15})`); lg.addColorStop(1, "rgba(255,210,230,0)");
+    c.strokeStyle = lg; c.lineWidth = 1.5; c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke();
   }
-  c.lineWidth = 2; c.strokeStyle = fever ? `rgba(255,217,61,${0.5 + beat * 0.4})` : `rgba(255,255,255,${0.18 + beat * 0.25})`;
+  c.lineWidth = 1; c.strokeStyle = "rgba(255,255,255,0.06)";
+  for (const k of [0.62, 0.8]) { c.beginPath(); c.arc(cx, cy, R * k, 0, Math.PI * 2); c.stroke(); }
+  c.save();
+  c.shadowColor = fever ? COLOR.perfect : "#ff2d55"; c.shadowBlur = 14 + beat * 16;
+  c.lineWidth = 2.5; c.strokeStyle = fever ? `rgba(255,217,61,${0.7 + beat * 0.3})` : `rgba(255,214,232,${0.65 + beat * 0.35})`;
   c.beginPath(); c.arc(cx, cy, R, 0, Math.PI * 2); c.stroke();
+  c.restore();
   const padR = R * 0.23;
   for (let l = 0; l < LANES; l++) {
     const [x, y] = laneXY(g, l, R);
     const age = t - r.padHit[l], flash = age < 0.3 ? 1 - age / 0.3 : 0;
     c.beginPath(); c.arc(x, y, padR * (1 + flash * 0.15), 0, Math.PI * 2);
     c.globalAlpha = flash ? 0.25 + flash * 0.5 : 1;
-    c.fillStyle = flash ? r.padColor[l] : `rgba(255,255,255,${0.05 + beat * (down ? 0.1 : 0.05)})`; c.fill();
+    c.fillStyle = flash ? r.padColor[l] : `rgba(255,255,255,${0.12 + beat * (down ? 0.1 : 0.05)})`; c.fill();
     c.globalAlpha = 1;
-    c.lineWidth = 2; c.strokeStyle = flash ? r.padColor[l] : `rgba(255,255,255,${0.3 + beat * 0.3})`; c.stroke();
+    c.lineWidth = 2; c.strokeStyle = flash ? r.padColor[l] : `rgba(255,255,255,${0.55 + beat * 0.3})`; c.stroke();
   }
   drawPlate(c, g, r, p, beat, down, now);
 
@@ -248,33 +352,49 @@ function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResu
     const [x, y] = laneXY(g, n.lane, R * (1 + (SPAWN - 1) * k));
     const rad = RADIUS[n.type] * R;
     if (n.type === "hold") {
-      const [tx, ty] = laneXY(g, n.lane, R * (1 + (SPAWN - 1) * Math.min(1.5, Math.max(0, n.t + n.dur - now) / A)));
+      const tail = R * (1 + (SPAWN - 1) * Math.min(1.5, Math.max(0, n.t + n.dur - now) / A)), head = R * (1 + (SPAWN - 1) * k);
+      const [tx, ty] = laneXY(g, n.lane, tail);
       c.lineCap = "round"; c.lineWidth = rad * 0.9;
-      c.strokeStyle = st === HOLDING ? `rgba(74,222,128,${0.6 + beat * 0.3})` : "rgba(74,222,128,0.35)";
+      c.strokeStyle = st === HOLDING ? `rgba(74,222,128,${0.45 + beat * 0.3})` : "rgba(74,222,128,0.25)";
       c.beginPath(); c.moveTo(x, y); c.lineTo(tx, ty); c.stroke();
+      // the body is a stack of smaller chips trailing back to the tail
+      for (let d = tail; d > head + rad; d -= rad * 1.1) { const [hx, hy] = laneXY(g, n.lane, d); drawChip(c, hx, hy, rad * 0.75, n.type, laneAngle(n.lane) + d / R, st === HOLDING); }
     }
     drawChip(c, x, y, rad, n.type, laneAngle(n.lane) + k * 1.5, st === HOLDING);
   }
 
   // effects
-  r.fx = r.fx.filter((f) => t - f.at < (f.kind === "text" ? 0.7 : f.kind === "ring" ? 0.4 : 0.6));
+  r.fx = r.fx.filter((f) => t - f.at < FX_LIFE[f.kind]);
   for (const f of r.fx) {
     const age = t - f.at;
     if (f.kind === "crumb") {
       f.x += f.vx * dt; f.y += f.vy * dt; f.vy += 900 * dt;
       c.globalAlpha = 1 - age / 0.6; c.fillStyle = f.color;
       c.beginPath(); c.ellipse(f.x, f.y, f.size, f.size * 0.7, age * 6, 0, Math.PI * 2); c.fill();
+    } else if (f.kind === "spark") {
+      f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 1 - dt * 4; f.vy *= 1 - dt * 4;
+      c.globalCompositeOperation = "lighter"; c.globalAlpha = 1 - age / 0.35; c.strokeStyle = "#ffb347"; c.lineWidth = 2;
+      c.beginPath(); c.moveTo(f.x, f.y); c.lineTo(f.x - f.vx * 0.05, f.y - f.vy * 0.05); c.stroke();
+      c.globalCompositeOperation = "source-over";
     } else if (f.kind === "ring") {
       const q = age / 0.4;
-      c.globalAlpha = 1 - q; c.strokeStyle = f.color; c.lineWidth = 3;
+      c.globalCompositeOperation = "lighter"; c.globalAlpha = 1 - q; c.strokeStyle = f.color; c.lineWidth = 1 + 4 * (1 - q);
       c.beginPath(); c.arc(f.x, f.y, padR * (1 + q * 1.8), 0, Math.PI * 2); c.stroke();
+      c.globalCompositeOperation = "source-over";
     } else {
-      const q = age / 0.7, pop = 1 + 0.2 * Math.max(0, 1 - age * 10);
-      c.globalAlpha = 1 - q * q; c.fillStyle = f.color; c.textAlign = "center"; c.textBaseline = "middle";
-      c.shadowColor = "rgba(0,0,0,0.7)"; c.shadowBlur = 8;
-      c.font = `${m * 0.034 * pop}px ${r.font}`; c.fillText(f.text, f.x, f.y - q * m * 0.04);
-      if (f.sub) { c.font = `${m * 0.018}px ${r.font}`; c.fillStyle = "rgba(255,255,255,0.7)"; c.fillText(f.sub, f.x, f.y + m * 0.026 - q * m * 0.04); }
-      c.shadowBlur = 0;
+      const q = age / 0.7, sz = m * 0.034 * (1 + 0.2 * Math.max(0, 1 - age * 10));
+      c.save();
+      c.translate(f.x, f.y - q * m * 0.04); c.transform(1, 0, -0.25, 1, 0, 0); // slanted, with speed lines either side
+      c.globalAlpha = 1 - q * q; c.textAlign = "center"; c.textBaseline = "middle"; c.font = `${sz}px ${r.font}`;
+      const hw = c.measureText(f.text).width / 2 + sz * 0.3;
+      c.strokeStyle = f.color; c.lineWidth = 2; c.beginPath();
+      c.moveTo(-hw - sz * 1.2, -sz * 0.3); c.lineTo(-hw, -sz * 0.3); c.moveTo(-hw - sz * 0.6, sz * 0.05); c.lineTo(-hw, sz * 0.05);
+      c.moveTo(hw, sz * 0.3); c.lineTo(hw + sz * 1.2, sz * 0.3); c.moveTo(hw, -sz * 0.05); c.lineTo(hw + sz * 0.6, -sz * 0.05);
+      c.stroke();
+      c.lineWidth = sz * 0.14; c.strokeStyle = "rgba(25,0,8,0.85)"; c.strokeText(f.text, 0, 0);
+      c.shadowColor = f.color; c.shadowBlur = 12; c.fillStyle = f.color; c.fillText(f.text, 0, 0);
+      if (f.sub) { c.shadowBlur = 0; c.font = `${m * 0.018}px ${r.font}`; c.fillStyle = "rgba(255,255,255,0.75)"; c.fillText(f.sub, 0, m * 0.026); }
+      c.restore();
     }
   }
   c.globalAlpha = 1;
@@ -285,8 +405,19 @@ function draw(canvas: HTMLCanvasElement, r: Run, hud: Hud, onDone: (res: RunResu
   const life = `${s.life}`;
   if (hud.lifeNum.textContent !== life) {
     hud.lifeNum.textContent = life; hud.life.style.width = `${s.life}%`;
-    hud.life.style.backgroundColor = s.life > 50 ? "#4ade80" : s.life > 25 ? "#ffd93d" : "#fb7185";
+    hud.life.style.color = s.life > 50 ? "#4ade80" : s.life > 25 ? "#ffd93d" : "#fb7185";
   }
+  const combo = s.combo >= 2 ? `x${s.combo}` : "", comboNum = hud.combo.lastElementChild as HTMLElement;
+  if (comboNum.textContent !== combo) {
+    comboNum.textContent = combo; hud.combo.style.visibility = combo ? "visible" : "hidden";
+    if (combo) hud.combo.animate([{ scale: 1.2 }, { scale: 1 }], { duration: 180, easing: "ease-out" });
+  }
+  // karaoke: the line being sung fills gold as it is sung; the next line waits underneath
+  const L = r.lyrics, li = started ? L.findLastIndex(([at]) => at <= now) : -1, line = hud.lyrics.firstElementChild as HTMLElement, after = hud.lyrics.lastElementChild as HTMLElement;
+  const cur = L[li]?.[1] ?? "", next = L[li + 1]?.[1] ?? "";
+  if (line.textContent !== cur) line.textContent = cur;
+  if (after.textContent !== next) after.textContent = next;
+  if (cur) line.style.setProperty("--p", `${sung(L, li, now)}%`);
   hud.fever.style.display = fever ? "inline-block" : "none";
   hud.progress.style.width = `${started && now > 0 ? Math.min(100, (100 * now) / r.song.duration) : 0}%`;
 }
@@ -311,8 +442,9 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
       if (!res.ok) throw new Error(`${url}: ${res.status}`);
       return ctx.decodeAudioData(await res.arrayBuffer());
     };
-    Promise.all([load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
-      .then(([songBuf, ...fx]) => {
+    const lyrics = fetch(`/lyrics/${song}.lrc`).then((res) => (res.ok ? res.text() : "")).catch(() => ""); // optional: no file, no lyrics
+    Promise.all([lyrics, load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
+      .then(([lrc, songBuf, ...fx]) => {
         if (cancelled) return;
         const chart = buildChart(downmix(songBuf), songBuf.sampleRate, song, difficulty);
         run.current = {
@@ -320,7 +452,10 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
           chart, status: new Uint8Array(chart.notes.length), score: initialScore(), startAt: Infinity,
           holds: new Map(), fx: [], padHit: new Float64Array(LANES).fill(-1), padColor: Array(LANES).fill("#fff"),
           pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync, ladder: streakLadder(chart.notes), savageAt: -Infinity,
+          lyrics: parseLrc(lrc),
         };
+        for (const t of ["tap", "hold", "pop"] as const) chipSprite(t); // render the chips now, not mid-song
+        BLUR.forEach((b) => chipSprite("tap", b));
         setLadder(run.current.ladder);
         setPhase("ready");
       })
@@ -398,7 +533,7 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
   };
 
   const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[#0b0e1a]/70 p-6 text-center backdrop-blur-sm";
-  const btn = "rounded-full border border-white/15 bg-white/5 px-4 py-2 text-xs font-bold tracking-widest text-white/80 backdrop-blur hover:bg-white/15";
+  const btn = "flex items-center gap-2 rounded-xl border-2 border-[#ff3b3b]/80 bg-[#2a070c]/75 px-4 py-2 text-xs font-bold tracking-widest text-white shadow-[0_0_14px_rgba(255,45,45,.45)] backdrop-blur hover:bg-[#4a0d16]/85";
   const dot = (color: string) => <i className="mr-2 inline-block h-3 w-3 rounded-full align-middle" style={{ background: color }} />;
   const [firstAt, first] = ladder[0], [topAt, top] = ladder[ladder.length - 1];
   return (
@@ -406,18 +541,39 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
       <canvas ref={canvasRef} className="h-full w-full touch-none" onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp} />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-white/10"><div data-hud="progress" className="h-full bg-[#ffd93d]" style={{ width: 0 }} /></div>
-      <div className="pointer-events-none absolute inset-x-0 top-4 flex items-start justify-between px-4 sm:px-6">
-        <div className="w-36 sm:w-56">
-          <div className="mb-1.5 flex justify-between text-[11px] font-bold tracking-[0.25em] text-white/60"><span>LIFE</span><span data-hud="lifenum">100</span></div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-white/10"><div data-hud="life" className="h-full rounded-full bg-[#4ade80]" style={{ width: "100%" }} /></div>
+      <div className="pointer-events-none absolute inset-x-0 top-4 flex items-start justify-between px-4 sm:px-8">
+        <div className="w-40 sm:w-80">
+          <div className="mb-1.5 flex justify-between text-xs font-bold tracking-[0.3em]"><span>LIFE</span><span data-hud="lifenum">100</span></div>
+          <div className="h-3 overflow-hidden rounded-full border border-white/50 bg-black/50">
+            <div data-hud="life" className="h-full rounded-full bg-current bg-linear-to-b from-white/40 to-transparent text-[#4ade80] shadow-[0_0_10px_currentColor]" style={{ width: "100%" }} />
+          </div>
         </div>
         <div className="text-right">
-          <div className="text-[11px] font-bold tracking-[0.25em] text-white/60">SCORE</div>
-          <div data-hud="score" className="font-display text-3xl leading-none sm:text-4xl">0</div>
+          <div className="text-xs font-bold tracking-[0.3em]">SCORE</div>
+          <div data-hud="score" className="font-display text-4xl leading-none italic [text-shadow:0_3px_0_rgba(0,0,0,.5)] sm:text-5xl">0</div>
           <div data-hud="fever" className="mt-1.5 rounded-full bg-[#ffd93d] px-3 py-0.5 text-xs font-black text-black" style={{ display: "none" }}>FEVER ×2</div>
         </div>
       </div>
-      <div data-hud="callout" className="shout"><b /><small /></div>
+      <div data-hud="combo" className="combo"><small>COMBO</small><b /></div>
+      <div data-hud="lyrics" className="lyrics"><b /><small /></div>
+      <div data-hud="callout" className="shout">
+        <b />
+        <div className="plate">
+          <i className="you" />
+          <svg className="emblem" viewBox="-50 -20 100 40" aria-hidden>
+            {[1, -1].map((s) => <path key={s} className="wing" transform={`scale(${s} 1)`} d="M-16-5-46-17-38-6-48 0-37 5-43 14-16 6Z" />)}
+            <path className="flame" d="M0-27C10-17 16-8 12 6 9 14-9 14-12 6-16-8-10-17 0-27Z" />
+            <rect className="badge" x="-12" y="-12" width="24" height="24" transform="rotate(45)" />
+            {[40, -40].map((a) => (
+              <g key={a} className="sword" transform={`rotate(${a})`}>
+                <path d="M0-20 2.2-16V8h-4.4v-24Z" /><rect x="-7" y="8" width="14" height="2.6" rx="1" /><rect x="-1.4" y="10.6" width="2.8" height="6" /><circle cy="18.5" r="2" />
+              </g>
+            ))}
+          </svg>
+          <i className="kill"><i /></i>
+        </div>
+        <small />
+      </div>
 
       {phase === "ready" && (
         // the whole overlay starts the run; the button inside gives the keyboard a target, its click bubbles up
@@ -455,9 +611,15 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
           {phase === "error" && <button onClick={onQuit} className="rounded-full bg-white px-6 py-3 font-bold text-black">Back</button>}
         </div>
       )}
-      <div className="absolute right-3 bottom-3 flex gap-2">
-        {phase === "playing" && <button onClick={pause} className={btn}>PAUSE</button>}
-        {phase !== "paused" && <button onClick={onQuit} className={btn}>QUIT</button>}
+      <div className="absolute right-4 bottom-4 flex gap-3">
+        {phase === "playing" && (
+          <button onClick={pause} className={btn}><svg viewBox="0 0 10 12" className="size-3" aria-hidden><path d="M0 0h3.5v12H0zm6.5 0H10v12H6.5z" fill="currentColor" /></svg>PAUSE</button>
+        )}
+        {phase !== "paused" && (
+          <button onClick={onQuit} className={btn}>
+            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5M3 12h11m-4-4 4 4-4 4" /></svg>QUIT
+          </button>
+        )}
       </div>
     </div>
   );

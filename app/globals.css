@@ -19,43 +19,115 @@ body {
   font-family: var(--font-geist-sans), system-ui, sans-serif;
 }
 
-/* Announcer banner (MLBB kill-streak style). --shout is the accent, set inline per shout. */
+/* Combo badge right of the ring, bottom-left on portrait screens. draw() in Game.tsx fills <b> ("x32") and shows it from a 2 combo. */
+.combo {
+  --s: min(30vmin, 17rem);
+  position: absolute; right: 5%; top: 32%; translate: 0 -50%; rotate: -8deg;
+  width: var(--s); aspect-ratio: 1; display: grid; place-content: center; text-align: center;
+  pointer-events: none; visibility: hidden;
+  font-family: var(--font-display); font-size: calc(var(--s) / 10); line-height: 0.95;
+  border: 0.15em solid #ff2a2a; border-radius: 50%;
+  background: radial-gradient(circle, rgba(130, 8, 16, 0.6), rgba(60, 0, 6, 0.45) 62%, rgba(255, 40, 40, 0.3));
+  box-shadow: 0 0 1.4em rgba(255, 30, 30, 0.6), inset 0 0 1.4em rgba(255, 40, 40, 0.45);
+}
+.combo::before { /* outer arc */
+  content: ""; position: absolute; inset: -0.6em; border-radius: 50%;
+  border: 0.1em solid rgba(255, 70, 70, 0.75); border-left-color: transparent; border-bottom-color: transparent;
+}
+.combo small, .combo b {
+  display: block; font-weight: 400; transform: skewX(-10deg);
+  background: linear-gradient(180deg, #fff7c7, #ffc93a 50%, #ff8a00); -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0.07em 0 #6b0a00) drop-shadow(0 0 0.25em rgba(255, 120, 0, 0.55));
+}
+.combo small { font-size: 1.3em; }
+.combo b { font-size: 2.8em; }
+@media (max-aspect-ratio: 1/1) { .combo { inset: auto auto 1rem 1rem; translate: none; } }
+
+/* Karaoke lyrics from public/lyrics/<song>.lrc, above the buttons (above the combo badge on portrait). draw() in Game.tsx sets the line, the next one and --p, how much of the line is sung. */
+.lyrics { position: absolute; inset-inline: 0; bottom: 4.5rem; padding: 0 1rem; text-align: center; pointer-events: none; font-weight: 800; line-height: 1.2; }
+.lyrics b {
+  display: inline-block; max-width: min(90vw, 40rem); text-wrap: balance; font-size: clamp(1.1rem, 3.4vmin, 2.1rem); /* inline-block: the sweep spans the text, not the screen */
+  background: linear-gradient(90deg, #ffd93d var(--p, 0%), #fff var(--p, 0%)); -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.85)) drop-shadow(0 0 10px rgba(0, 0, 0, 0.7));
+}
+.lyrics small { display: block; margin-top: 0.3rem; font-size: clamp(0.8rem, 2.3vmin, 1.3rem); color: rgba(255, 255, 255, 0.5); text-shadow: 0 2px 4px #000; }
+.lyrics :empty { display: none; }
+@media (max-aspect-ratio: 1/1) { .lyrics { bottom: calc(30vmin + 2.5rem); } }
+
+/* Announcer, an MLBB kill plate. callout() in Game.tsx sets --shout (accent), --c0..2 (chip light/mid/edge) and data-tier (0 swords, 1 wings, 2 flames). */
 .shout {
   --shout: #ffd93d;
-  position: absolute; left: 0; right: 0; top: 50%;
-  padding: 0.9rem 0 1rem; text-align: center; pointer-events: none; opacity: 0; overflow: hidden;
-  /* translucent on purpose: chips on the side lanes pass under it */
-  background: linear-gradient(90deg, transparent, rgba(11, 14, 26, 0.55) 18%, rgba(11, 14, 26, 0.7) 50%, rgba(11, 14, 26, 0.55) 82%, transparent);
-  border-block: 1px solid; border-image: linear-gradient(90deg, transparent 5%, var(--shout), transparent 95%) 1;
-}
-.shout::after { /* light sweep */
-  content: ""; position: absolute; inset: 0; transform: translateX(-100%);
-  background: linear-gradient(100deg, transparent 42%, rgba(255, 255, 255, 0.35) 50%, transparent 58%);
+  --u: min(1vw, 0.7vh); /* everything is sized in u so the plate scales with the playfield; it is 22u tall */
+  --h: calc(22 * var(--u));
+  --taper: polygon(calc(3 * var(--u)) 0, calc(100% - 3 * var(--u)) 0, 100% 50%, calc(100% - 3 * var(--u)) 100%, calc(3 * var(--u)) 100%, 0 50%);
+  --plate: linear-gradient(90deg, rgba(37, 99, 235, 0.65), rgba(11, 14, 26, 0.8) 30% 70%, rgba(220, 38, 38, 0.65));
+  position: absolute; left: 0; right: 0; height: var(--h);
+  /* under the HUD and above the chips' spawn line when there's room, never over the top pad (geom() in Game.tsx: R = 27vmin, pad edge 1.23R, spawn 2.04R) */
+  top: max(0.5rem, min(calc(50% - 33.2vmin - 0.5rem - var(--h)), max(6rem, calc(50% - 55vmin - var(--h)))));
+  text-align: center; pointer-events: none; opacity: 0;
 }
 .shout b {
-  display: inline-block; font-family: var(--font-display); font-weight: 400;
-  font-size: clamp(1.9rem, 9vw, 5.5rem); line-height: 1; letter-spacing: 0.03em; white-space: nowrap; padding: 0 0.2em;
+  display: inline-block; vertical-align: top; font-family: var(--font-display); font-weight: 400;
+  font-size: calc(9 * var(--u)); line-height: 1; letter-spacing: 0.03em; white-space: nowrap; padding: 0 0.2em;
   transform: skewX(-8deg);
   background: linear-gradient(180deg, #fff8d6 0%, var(--shout) 48%, color-mix(in srgb, var(--shout) 55%, #000) 100%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
   filter: drop-shadow(0 3px 0 rgba(0, 0, 0, 0.75)) drop-shadow(0 0 22px color-mix(in srgb, var(--shout) 55%, transparent));
 }
-.shout small { display: block; margin-top: 0.4rem; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4em; color: rgba(255, 255, 255, 0.75); }
-.shout small:empty { display: none; }
-.shout.on { animation: shout-band 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
-.shout.on::after { animation: shout-sweep 1.4s ease-in-out both; }
-.shout.on b { animation: shout-slam 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
-.shout.on small { animation: shout-sub 1.4s ease-out both; }
-@keyframes shout-band {
-  0% { opacity: 0; transform: translateY(-50%) scaleX(0.3); }
-  14% { opacity: 1; transform: translateY(-50%) scaleX(1); }
-  78% { opacity: 1; transform: translateY(-50%); }
-  100% { opacity: 0; transform: translateY(calc(-50% - 16px)); }
+.shout .plate {
+  position: relative; isolation: isolate; display: flex; align-items: center; justify-content: space-between;
+  width: calc(70 * var(--u)); height: calc(10 * var(--u)); margin: 0 auto;
 }
+.shout .plate::before, .shout .plate::after { content: ""; position: absolute; inset: calc(1.5 * var(--u)) 0; z-index: -1; clip-path: var(--taper); }
+.shout .plate::before {
+  background:
+    linear-gradient(90deg, transparent 8%, var(--shout), transparent 92%) top / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 8%, var(--shout), transparent 92%) bottom / 100% 2px no-repeat,
+    var(--plate);
+}
+.shout .plate::after { /* light sweep */
+  background: linear-gradient(100deg, transparent 42%, rgba(255, 255, 255, 0.35) 50%, transparent 58%) 100% 0 / 250% 100%;
+}
+.shout .you, .shout .kill {
+  display: grid; place-items: center; width: calc(10 * var(--u)); aspect-ratio: 1; border-radius: 50%; font-style: normal;
+  border: calc(0.6 * var(--u)) solid #3b82f6; box-shadow: 0 0 calc(1.6 * var(--u)) rgba(59, 130, 246, 0.7);
+  background: radial-gradient(circle at 50% 35%, #2a3058, #0b0e1a);
+  font-family: var(--font-display); font-size: calc(3.4 * var(--u)); line-height: 1; color: #fff;
+}
+.shout .kill { border-color: #ef4444; box-shadow: 0 0 calc(1.6 * var(--u)) rgba(239, 68, 68, 0.7); }
+.shout .kill i { width: 62%; aspect-ratio: 1; border-radius: 50%; border: calc(0.35 * var(--u)) solid var(--c2); background: radial-gradient(circle at 35% 30%, var(--c0), var(--c1) 65%); }
+.shout.star .kill i { display: none; }
+.shout.star .kill::after { content: "★"; color: var(--shout); font-size: calc(5 * var(--u)); }
+.shout.lost { --plate: linear-gradient(90deg, rgba(100, 116, 139, 0.5), rgba(40, 8, 14, 0.85) 30% 70%, rgba(220, 38, 38, 0.75)); }
+.shout.lost .you { border-color: #64748b; box-shadow: none; color: rgba(255, 255, 255, 0.45); text-decoration: line-through; }
+.shout .emblem { width: calc(30 * var(--u)); height: calc(12 * var(--u)); overflow: visible; filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.7)); }
+.shout .wing { fill: var(--shout); }
+.shout .flame { fill: #ff7a3d; transform-box: fill-box; transform-origin: 50% 100%; }
+.shout .badge { fill: #0b0e1a; stroke: var(--shout); stroke-width: 2.5; }
+.shout .sword { fill: color-mix(in srgb, var(--shout) 35%, #fff); }
+.shout[data-tier="0"] .wing, .shout:not([data-tier="2"]) .flame { display: none; }
+.shout[data-tier="2"] .emblem { filter: drop-shadow(0 0 calc(1.2 * var(--u)) #ff7a3d); }
+.shout small { display: block; margin-top: calc(0.8 * var(--u)); font-size: max(0.6rem, calc(2.2 * var(--u))); font-weight: 700; letter-spacing: 0.4em; color: rgba(255, 255, 255, 0.75); }
+.shout small:empty { display: none; }
+.shout.on { animation: shout-band 1.4s ease-out both; }
+.shout.on b { animation: shout-slam 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on .you { animation: shout-left 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on .kill { animation: shout-right 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on .emblem { animation: shout-emblem 1.4s ease-out both; }
+.shout.on .plate::before { animation: shout-open 1.4s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
+.shout.on .plate::after { animation: shout-sweep 1.4s ease-in-out both; }
+.shout.on .flame { animation: shout-flicker 0.14s ease-in-out infinite alternate; }
+.shout.on small { animation: shout-sub 1.4s ease-out both; }
+@keyframes shout-band { 0% { opacity: 0; } 8%, 80% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-16px); } }
 @keyframes shout-slam {
   0% { opacity: 0; transform: skewX(-8deg) scale(2.4); }
   16% { opacity: 1; transform: skewX(-8deg) scale(0.95); }
   26%, 100% { transform: skewX(-8deg) scale(1); }
 }
-@keyframes shout-sweep { 0%, 18% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
+@keyframes shout-left { 0% { opacity: 0; transform: translateX(calc(-30 * var(--u))); } 18%, 100% { opacity: 1; transform: none; } }
+@keyframes shout-right { 0% { opacity: 0; transform: translateX(calc(30 * var(--u))); } 18%, 100% { opacity: 1; transform: none; } }
+@keyframes shout-emblem { 0%, 14% { transform: scale(0); } 24% { transform: scale(1.35); } 32%, 100% { transform: scale(1); } }
+@keyframes shout-open { 0% { transform: scaleX(0.15); } 18%, 100% { transform: none; } }
+@keyframes shout-sweep { 0%, 22% { background-position: 100% 0; } 65%, 100% { background-position: 0 0; } }
+@keyframes shout-flicker { to { transform: scaleY(1.15); opacity: 0.8; } }
 @keyframes shout-sub { 0%, 20% { opacity: 0; transform: translateY(6px); } 40%, 100% { opacity: 1; transform: none; } }
