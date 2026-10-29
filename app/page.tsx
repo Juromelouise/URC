@@ -19,12 +19,12 @@ const write = (key: string, value: string) => {
   window.dispatchEvent(new Event("storage")); // same-tab readers re-render; the browser only fires this for other tabs
 };
 const signed = (ms: number) => `${ms > 0 ? "+" : ""}${ms}ms`;
-const bgClass = "relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-[#0b0e1a] p-6 text-center text-white";
+const bgClass = "relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-black p-6 text-center text-white";
 const Backdrop = () => (
   <>
-    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,#232a52_0%,#0b0e1a_60%)]" />
-    <div className="pointer-events-none absolute top-1/2 left-1/2 h-[80vmin] w-[80vmin] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/5" />
-    <div className="pointer-events-none absolute top-1/2 left-1/2 h-[120vmin] w-[120vmin] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/5" />
+    <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_35%,#7a0d0d_0%,#2a0505_40%,#000_72%)]" />
+    <div className="pointer-events-none absolute top-1/2 left-1/2 h-[80vmin] w-[80vmin] -translate-x-1/2 -translate-y-1/2 rounded-full border border-red-500/15" />
+    <div className="pointer-events-none absolute top-1/2 left-1/2 h-[120vmin] w-[120vmin] -translate-x-1/2 -translate-y-1/2 rounded-full border border-red-500/10" />
   </>
 );
 
@@ -47,7 +47,7 @@ export default function Home() {
 
   if (screen.name === "results") {
     const { result: r, song, isBest, syncAtRun } = screen;
-    const acc = accuracy(r), g = grade(acc);
+    const acc = accuracy(r), g = grade(acc), savage = !r.failed && r.miss === 0 && r.score > 0; // same rule as the in-game SAVAGE
     const offMs = Math.round(meanOffset(r) * 1000);
     const stat = (label: string, value: string | number, color = "#fff") => (
       <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
@@ -60,14 +60,15 @@ export default function Home() {
         <Backdrop />
         <div className="relative flex w-full max-w-md flex-col items-center gap-5">
           <p className="text-xs font-bold tracking-[0.35em] text-white/50">{r.failed ? "OUT OF LIFE" : "SONG CLEAR"} · {song.toUpperCase()} · {diff.toUpperCase()}</p>
-          <p className="font-display text-[9rem] leading-none" style={{ color: GRADE_COLOR[g], textShadow: `0 0 60px ${GRADE_COLOR[g]}` }}>{g}</p>
-          <p className="font-display text-4xl">{r.score.toLocaleString()}</p>
-          {(isBest || r.miss === 0) && r.score > 0 && (
-            <div className="flex gap-2">
-              {r.miss === 0 && <p className="rounded-full bg-[#5eead4] px-4 py-1 text-sm font-black text-black">SAVAGE · FULL COMBO</p>}
-              {isBest && <p className="rounded-full bg-[#ffd93d] px-4 py-1 text-sm font-black text-black">NEW BEST!</p>}
+          {savage && (
+            <div className="-mb-3">
+              <p className="font-display -skew-x-8 bg-linear-to-b from-[#f0fffb] via-[#5eead4] to-[#0f766e] bg-clip-text text-6xl leading-none text-transparent drop-shadow-[0_0_24px_rgba(94,234,212,.55)] sm:text-7xl">SAVAGE</p>
+              <p className="mt-1 text-xs font-bold tracking-[0.4em] text-[#5eead4]">FULL COMBO · NO MISS</p>
             </div>
           )}
+          <p className="font-display text-[9rem] leading-none" style={{ color: GRADE_COLOR[g], textShadow: `0 0 60px ${GRADE_COLOR[g]}` }}>{g}</p>
+          <p className="font-display text-4xl">{r.score.toLocaleString()}</p>
+          {isBest && r.score > 0 && <p className="rounded-full bg-[#ffd93d] px-4 py-1 text-sm font-black text-black">NEW BEST!</p>}
           <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3">
             {stat("ACCURACY", `${Math.round(acc * 100)}%`)}
             {stat("MAX COMBO", r.maxCombo)}
@@ -98,7 +99,10 @@ export default function Home() {
       <div className="relative flex w-full max-w-md flex-col items-center gap-8">
         <div>
           <p className="mb-3 text-xs font-bold tracking-[0.35em] text-[#ffd93d]">TAP · HOLD · POP</p>
-          <h1 className="font-display bg-gradient-to-b from-[#ffe58a] to-[#ff7a3d] bg-clip-text text-6xl leading-none text-transparent sm:text-8xl">CRUNCH<br />CIRCLE</h1>
+          <h1 className="font-display leading-none">
+            <span className="block text-3xl tracking-[0.15em] text-white sm:text-4xl">PLAY THE</span>
+            <span className="block bg-gradient-to-b from-[#ffe58a] to-[#ff7a3d] bg-clip-text text-6xl text-transparent drop-shadow-[0_0_30px_rgba(255,59,31,.5)] sm:text-8xl">CRUNCH</span>
+          </h1>
           <p className="mt-4 text-white/60">Chips ride the beat into the ring. Tap the pad when they land.</p>
         </div>
         <div className="flex flex-col items-center gap-2">

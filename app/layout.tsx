@@ -19,7 +19,7 @@ const bungee = Bungee({
 });
 
 export const metadata: Metadata = {
-  title: "Crunch Circle",
+  title: "Play the Crunch",
   description: "Chips ride the beat into the ring. Tap the pad when they land.",
 };
 

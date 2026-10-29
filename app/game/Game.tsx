@@ -24,7 +24,7 @@ export const CHIP: Record<NoteType, [string, string, string]> = {
   hold: ["#c6f7d0", "#4ade80", "#15803d"],
   pop: ["#ffc29b", "#ff6b2c", "#9a2f0f"],
 };
-const GLOW: Record<NoteType, string> = { tap: "#ff6a00", hold: "#22c55e", pop: "#ff2d1a" };
+const GLOW: Record<NoteType, string> = { tap: "#ff9a00", hold: "#22c55e", pop: "#ff2d1a" };
 const RADIUS: Record<NoteType, number> = { tap: 0.14, hold: 0.14, pop: 0.18 }; // in ring radii; tap radius ~= distance a chip travels in WINDOW.good, so touching the ring line = hittable
 const SFX_RATE: Record<Judgment, number> = { perfect: 1, great: 0.95, good: 0.85, miss: 1 };
 
@@ -47,7 +47,6 @@ interface Run {
   pulse: number; shake: number; lastFrame: number; done: boolean; font: string;
   sync: number; // seconds the player hears audio late, from calibration
   ladder: Ladder; // streak calls scaled to this chart
-  savageAt: number; // ctx time of the full-combo shout, -Infinity until then
   lyrics: Lyric[]; // from public/lyrics/<song>.lrc, empty when there is none
 }
 type Phase = "loading" | "ready" | "playing" | "paused" | "error";
@@ -145,46 +144,20 @@ function update(r: Run, hud: Hud, now: number, g: Geom) {
     const n = notes[i];
     if (now >= n.t + n.dur) { r.holds.delete(pid); r.status[i] = DONE; award(r, hud, "perfect", "tail", n, g); play(r, "pop"); }
   }
-  if (r.savageAt === -Infinity && !r.score.miss && notes.length && r.status.every((st) => st === DONE)) {
-    r.savageAt = r.ctx.currentTime; r.shake = Math.max(r.shake, 10);
-    callout(hud, "SAVAGE", "FULL COMBO", r.score.maxCombo);
-  }
 }
 
-const SPRITE = 96; // chip radius in sprite pixels; a sprite is 4 radii across so the glow, shadow and blur fit
+const SPRITE = 96; // chip radius in sprite pixels; a sprite is 4 radii across so the glow and blur fit
 const BLUR = [5, 10, 18]; // sprite pixels, for the out-of-focus chips flying past; never sharp, so they can't pass for notes
 const sprites = new Map<string, HTMLCanvasElement>();
-/** Crisp colours per type, RGB: cheese, sour cream & onion, spicy. */
-const CRISP: Record<NoteType, { base: number[]; powder: number[]; fleck: number[] }> = {
-  tap: { base: [246, 188, 74], powder: [242, 132, 38], fleck: [196, 58, 18] },
-  hold: { base: [206, 218, 112], powder: [236, 238, 196], fleck: [46, 128, 40] },
-  pop: { base: [240, 124, 46], powder: [226, 64, 24], fleck: [140, 18, 8] },
-};
-const TOAST = [138, 60, 16];
-const hash = (x: number, y: number) => {
-  let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-};
-/** Smooth value noise, 0..1. */
-function noise(x: number, y: number) {
-  const xi = Math.floor(x), yi = Math.floor(y), u = x - xi, v = y - yi, su = u * u * (3 - 2 * u), sv = v * v * (3 - 2 * v);
-  const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
-  return a + (b - a) * su + (c - a) * sv + (a - b - c + d) * su * sv;
-}
-const fbm = (x: number, y: number) => noise(x, y) * 0.5 + noise(x * 2, y * 2) * 0.25 + noise(x * 4, y * 4) * 0.125 + noise(x * 8, y * 8) * 0.0625;
-/** Signed distance to a hexagon with inradius r (Inigo Quilez). */
-function sdHex(x: number, y: number, r: number) {
-  x = Math.abs(x); y = Math.abs(y);
-  const t = 2 * Math.min(-0.866025404 * x + 0.5 * y, 0);
-  x += t * 0.866025404; y -= t * 0.5;
-  x -= Math.max(-0.577350269 * r, Math.min(0.577350269 * r, x)); y -= r;
-  return Math.hypot(x, y) * Math.sign(y);
-}
-/**
- * A chip pre-rendered once per type: a bump-mapped crisp (curl, air blisters, grain, bevelled rim) lit from the top left,
- * toasted at the edge and on the blisters, dusted with powder and flecks. Blurred copies are the debris.
- */
+/** The chip photos, public/chips/<type>.webp: cut out and cropped square around the chip's centre, corners touching the edge. */
+const PHOTO = {} as Record<NoteType, HTMLImageElement>;
+const loadPhotos = () => Promise.all((["tap", "hold", "pop"] as const).map(async (t) => {
+  const img = new Image();
+  img.src = `/chips/${t}.webp`;
+  await img.decode();
+  PHOTO[t] = img;
+}));
+/** A chip photo with a warm glow so it reads on the dark field, pre-rendered once per type. Blurred copies are the debris. */
 function chipSprite(type: NoteType, blur = 0): HTMLCanvasElement {
   const key = type + blur, cached = sprites.get(key);
   if (cached) return cached;
@@ -192,47 +165,9 @@ function chipSprite(type: NoteType, blur = 0): HTMLCanvasElement {
   cv.width = cv.height = rad * 4;
   sprites.set(key, cv);
   if (blur) { c.filter = `blur(${blur}px)`; c.drawImage(chipSprite(type), 0, 0); return cv; } // ponytail: no canvas filter (older Safari) = sharp debris
-  const { base, powder, fleck } = CRISP[type], o = Math.random() * 100, N = Math.ceil(rad * 2.4), mid = N / 2;
-  const blisters = Array.from({ length: 40 }, () => {
-    const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * 0.8;
-    return { x: Math.cos(a) * d, y: Math.sin(a) * d, r: 0.04 + Math.random() * 0.12, h: 0.03 + Math.random() * 0.06 };
-  });
-  // height field and edge distance, in chip radii
-  const H = new Float32Array(N * N), D = new Float32Array(N * N), top = new Float32Array(N * N);
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const x = (i - mid) / rad, y = (j - mid) / rad, k = j * N + i;
-    D[k] = sdHex(x, y, 0.8) - 0.12 + (fbm(x * 2.5 + o, y * 2.5 + o) - 0.47) * 0.1; // rounded corners, unevenly snapped edge
-    let h = 0.16 * (x * x - 0.7 * y * y) - 0.05 * Math.max(0, 1 + D[k] / 0.07) ** 2 + fbm(x * 7 + o, y * 7) * 0.03; // curl, bevelled rim, grain
-    for (const b of blisters) {
-      const q = ((x - b.x) ** 2 + (y - b.y) ** 2) / (b.r * b.r);
-      if (q < 1) { h += b.h * (1 - q) ** 2; top[k] = Math.max(top[k], (1 - q) ** 2); }
-    }
-    H[k] = h;
-  }
-  const img = c.createImageData(N, N), px = img.data, L = [-0.4, -0.5, 0.77], V = [-0.21, -0.26, 0.94]; // light, and its half-vector with the viewer
-  for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
-    const k = j * N + i, a = Math.min(1, Math.max(0, 0.5 - D[k] * rad));
-    if (!a) continue;
-    const x = (i - mid) / rad, y = (j - mid) / rad;
-    const sx = ((H[k + 1] - H[k - 1]) * rad) / 2, sy = ((H[k + N] - H[k - N]) * rad) / 2, n = Math.hypot(sx, sy, 1);
-    const diff = Math.max(0, (-sx * L[0] - sy * L[1] + L[2]) / n), spec = Math.max(0, (-sx * V[0] - sy * V[1] + V[2]) / n) ** 40;
-    const ring = top[k] * (1 - top[k]) * 4; // blister rims brown, their puffed tops stay pale
-    const toast = Math.min(1, Math.max(0, 1 + D[k] / 0.16) ** 2 * 0.7 + ring * 0.25 + Math.max(0, fbm(x * 3 - o, y * 3 + o) - 0.5) * 0.6);
-    const dust = fbm(x * 5 - o, y * 5 + o) > 0.5 ? 0.35 : 0;
-    const flecks = noise(x * 45 + o, y * 45) * 0.6 + noise(x * 90, y * 90 + o) * 0.4 > 0.8 ? 0.6 : 0;
-    for (let ch = 0; ch < 3; ch++) {
-      let v = base[ch] + (powder[ch] - base[ch]) * dust;
-      v += (TOAST[ch] - v) * toast; v += (fleck[ch] - v) * flecks; v += top[k] * 18;
-      px[k * 4 + ch] = v * (0.5 + 0.65 * diff) + spec * 100;
-    }
-    px[k * 4 + 3] = a * 255;
-  }
-  const chip = document.createElement("canvas"), at = Math.floor((rad * 4 - N) / 2);
-  chip.width = chip.height = N;
-  (chip.getContext("2d") as CanvasRenderingContext2D).putImageData(img, 0, 0);
-  c.shadowColor = `${GLOW[type]}99`; c.shadowBlur = rad * 0.45; c.drawImage(chip, at, at); // a warm glow so it reads on the dark field
-  c.shadowColor = "rgba(0,0,0,0.55)"; c.shadowBlur = rad * 0.12; c.shadowOffsetX = rad * 0.05; c.shadowOffsetY = rad * 0.09;
-  c.drawImage(chip, at, at); // and a drop shadow under it
+  const s = rad * 2.1, at = rad * 2 - s / 2; // corners 1.05 radii out, as the drawn chips had them
+  c.shadowColor = `${GLOW[type]}aa`; c.shadowBlur = rad * 0.5; c.drawImage(PHOTO[type], at, at, s, s); // wide glow
+  c.shadowColor = GLOW[type]; c.shadowBlur = rad * 0.12; c.drawImage(PHOTO[type], at, at, s, s); // and a bright halo hugging the rim
   return cv;
 }
 function drawChip(c: CanvasRenderingContext2D, x: number, y: number, rad: number, type: NoteType, rot: number, holding: boolean, blur = 0) {
@@ -443,15 +378,15 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
       return ctx.decodeAudioData(await res.arrayBuffer());
     };
     const lyrics = fetch(`/lyrics/${song}.lrc`).then((res) => (res.ok ? res.text() : "")).catch(() => ""); // optional: no file, no lyrics
-    Promise.all([lyrics, load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
-      .then(([lrc, songBuf, ...fx]) => {
+    Promise.all([loadPhotos(), lyrics, load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
+      .then(([, lrc, songBuf, ...fx]) => {
         if (cancelled) return;
         const chart = buildChart(downmix(songBuf), songBuf.sampleRate, song, difficulty);
         run.current = {
           ctx, song: songBuf, sfx: Object.fromEntries(SFX.map((n, i) => [n, fx[i]])) as Record<Sfx, AudioBuffer>,
           chart, status: new Uint8Array(chart.notes.length), score: initialScore(), startAt: Infinity,
           holds: new Map(), fx: [], padHit: new Float64Array(LANES).fill(-1), padColor: Array(LANES).fill("#fff"),
-          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync, ladder: streakLadder(chart.notes), savageAt: -Infinity,
+          pulse: 0, shake: 0, lastFrame: 0, done: false, font: "system-ui", sync, ladder: streakLadder(chart.notes),
           lyrics: parseLrc(lrc),
         };
         for (const t of ["tap", "hold", "pop"] as const) chipSprite(t); // render the chips now, not mid-song
@@ -497,8 +432,14 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
     src.buffer = r.song; src.connect(r.ctx.destination);
     r.startAt = r.ctx.currentTime + COUNTDOWN;
     src.start(r.startAt);
-    src.onended = () => { // hold the results until a full-combo shout has played out
-      setTimeout(() => finish(r, false, onDoneRef.current), Math.max(0, r.savageAt + SHOUT_SECONDS - r.ctx.currentTime) * 1000);
+    src.onended = () => {
+      const h = hud.current;
+      if (r.done || !h) return; // out of life or quit: already over
+      if (r.score.miss || !r.chart.notes.length) return finish(r, false, onDoneRef.current);
+      // the song is over without a single miss: SAVAGE, and the results wait for it to play out
+      r.shake = Math.max(r.shake, 10); play(r, "open");
+      callout(h, "SAVAGE", "FULL COMBO", r.score.maxCombo);
+      setTimeout(() => finish(r, false, onDoneRef.current), SHOUT_SECONDS * 1000);
     };
     r.source = src;
     setPhase("playing");
@@ -532,12 +473,12 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
     if (holdComplete(n, songTime(r) - INPUT_LATENCY)) { award(r, h, "perfect", "tail", n, g); play(r, "pop"); }
   };
 
-  const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-[#0b0e1a]/70 p-6 text-center backdrop-blur-sm";
+  const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-black/70 p-6 text-center backdrop-blur-sm";
   const btn = "flex items-center gap-2 rounded-xl border-2 border-[#ff3b3b]/80 bg-[#2a070c]/75 px-4 py-2 text-xs font-bold tracking-widest text-white shadow-[0_0_14px_rgba(255,45,45,.45)] backdrop-blur hover:bg-[#4a0d16]/85";
   const dot = (color: string) => <i className="mr-2 inline-block h-3 w-3 rounded-full align-middle" style={{ background: color }} />;
   const [firstAt, first] = ladder[0], [topAt, top] = ladder[ladder.length - 1];
   return (
-    <div ref={rootRef} className="fixed inset-0 select-none overflow-hidden bg-[#0b0e1a] font-sans text-white">
+    <div ref={rootRef} className="fixed inset-0 select-none overflow-hidden bg-black font-sans text-white">
       <canvas ref={canvasRef} className="h-full w-full touch-none" onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp} />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-white/10"><div data-hud="progress" className="h-full bg-[#ffd93d]" style={{ width: 0 }} /></div>
@@ -577,7 +518,7 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
 
       {phase === "ready" && (
         // the whole overlay starts the run; the button inside gives the keyboard a target, its click bubbles up
-        <div onClick={start} className="absolute inset-0 cursor-pointer overflow-y-auto bg-[#0b0e1a]/70 backdrop-blur-sm">
+        <div onClick={start} className="absolute inset-0 cursor-pointer overflow-y-auto bg-black/70 backdrop-blur-sm">
           <div className="flex min-h-full flex-col items-center justify-center gap-5 p-6 text-center">
             <button className="font-display text-5xl text-[#ffd93d] [text-shadow:0_6px_30px_rgba(255,217,61,.35)] sm:text-7xl">TAP TO START</button>
             <span className="text-xs font-bold tracking-[0.3em] text-white/50">{song.toUpperCase()} · {difficulty.toUpperCase()}</span>
