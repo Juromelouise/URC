@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BASE, DONE, FEVER_COMBO, GRADES, LANES, MANIAC_SHARE, PENDING, accuracy, announce, applyJudgment, beatAt, buildChart, expired, grade, holdComplete, initialScore, judge, laneAt, meanOffset, parseLrc, streakLadder, sung, type Judgment, type Note, type Score } from "./engine.ts";
@@ -125,29 +126,29 @@ test("score: multiplier, fever, life, grade, timing offset", () => {
 const taps = (n: number): Note[] => Array.from({ length: n }, (_, i) => ({ t: i, type: "tap", lane: 0, dur: 0 }));
 const hit = (s: Score, j: Judgment = "perfect") => applyJudgment(s, j, "tap").state;
 
-test("announcer: first blood once, streak ladder on the way up, shutdown only from legendary", () => {
+test("announcer: first blood once, kill calls on the way up, shutdown only from triple kill", () => {
   const L = streakLadder(taps(100 / MANIAC_SHARE)); // a chart long enough for the unscaled ladder
-  assert.deepEqual(L.map(([at]) => at), [10, 20, 30, 40, 50, 75, 100]);
+  assert.deepEqual(L.map(([at]) => at), [50, 75, 100]);
   const said: string[] = [];
   let s = hit(initialScore(), "miss"); // a whiff first does not spend first blood
   for (let i = 0; i < 150; i++) { const n = hit(s); const a = announce(s, n, L); if (a) said.push(a); s = n; }
-  assert.deepEqual(said, ["FIRST BLOOD", "KILLING SPREE", "MEGA KILL", "UNSTOPPABLE", "MONSTER KILL", "GOD-LIKE", "LEGENDARY", "MANIAC", "MANIAC"]);
+  assert.deepEqual(said, ["FIRST BLOOD", "DOUBLE KILL", "TRIPLE KILL", "MANIAC", "MANIAC"]);
   assert.equal(announce(s, hit(s, "miss"), L), "SHUTDOWN");
   const broken = hit(s, "miss");
   assert.equal(announce(broken, hit(broken), L), null, "first blood again after a break");
   let short = initialScore();
-  for (let i = 0; i < 12; i++) short = hit(short);
+  for (let i = 0; i < 60; i++) short = hit(short);
   assert.equal(announce(short, hit(short, "miss"), L), "COMBO BREAK");
   assert.equal(announce(hit(initialScore()), hit(hit(initialScore()), "miss"), L), null, "a 1-combo break is not worth shouting");
 });
 
 test("streak ladder scales to each chart so maniac is always reachable", () => {
-  // English easy: 59 chips, 8 of them holds, so 67 hits at best
-  const easy = streakLadder([...taps(51), ...taps(8).map((n) => ({ ...n, type: "hold" as const, dur: 1 }))]);
-  assert.deepEqual(easy.map(([at]) => at), [3, 7, 10, 13, 17, 25, 34]);
+  // English easy: 64 chips, 9 of them holds, so 73 hits at best
+  const easy = streakLadder([...taps(55), ...taps(9).map((n) => ({ ...n, type: "hold" as const, dur: 1 }))]);
+  assert.deepEqual(easy.map(([at]) => at), [18, 27, 37]);
   for (const d of ["easy", "normal", "hard"] as const) {
     const ns = buildChart(mono, sr, "test", d).notes, L = streakLadder(ns), best = ns.length + ns.filter((n) => n.type === "hold").length;
-    assert.ok(L[0][0] >= 2, `${d}: killing spree on the first hit`);
+    assert.ok(L[0][0] >= 2, `${d}: double kill on the first hit`);
     for (let i = 1; i < L.length; i++) assert.ok(L[i][0] > L[i - 1][0], `${d}: ladder does not rise at ${L[i][1]}`);
     assert.ok(L[L.length - 1][0] <= best, `${d}: maniac at ${L[L.length - 1][0]} with only ${best} hits`);
     let s = initialScore(), said = "";
@@ -155,7 +156,20 @@ test("streak ladder scales to each chart so maniac is always reachable", () => {
     assert.equal(said, "MANIAC", `${d}: a full combo never reached maniac`);
   }
   const tiny = streakLadder(taps(4)); // the ladder still rises when the chart is too short to space it
-  assert.deepEqual(tiny.map(([at]) => at), [2, 3, 4, 5, 6, 7, 8]);
+  assert.deepEqual(tiny.map(([at]) => at), [2, 3, 4]);
+});
+
+test("the saved charts give the tier table's combos: double kill, triple kill, maniac, and savage's full combo", () => {
+  const table: Record<string, number[]> = {
+    "English-easy": [18, 27, 37, 73], "INDO-easy": [25, 37, 49, 98],
+    "English-normal": [24, 36, 49, 97], "INDO-normal": [35, 52, 69, 138],
+    "English-hard": [32, 48, 64, 127], "INDO-hard": [45, 68, 91, 181],
+  };
+  for (const [name, want] of Object.entries(table)) {
+    const { notes } = JSON.parse(readFileSync(new URL(`../../public/charts/${name}.json`, import.meta.url), "utf8")) as { notes: Note[] };
+    const best = notes.length + notes.filter((n) => n.type === "hold").length;
+    assert.deepEqual([...streakLadder(notes).map(([at]) => at), best], want, name);
+  }
 });
 
 test("lrc lyrics parse to sorted timed lines; tags are skipped, repeated stamps repeat the line", () => {

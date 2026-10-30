@@ -327,9 +327,9 @@ export function sung(lyrics: Lyric[], i: number, now: number) {
   return (100 * (at + (nat - at) * Math.min(1, (now - wt) / Math.max(1e-3, nt - wt)))) / text.length;
 }
 
-/** MLBB-style announcer: a hit is a kill, the combo is the streak. Savage is the full-combo badge on the results screen. */
+/** MLBB-style announcer: a hit is a kill, the combo is the streak. First blood is the first hit, savage a song cleared with no misses. */
 export type Ladder = [at: number, call: string][];
-const STREAKS: Ladder = [[10, "KILLING SPREE"], [20, "MEGA KILL"], [30, "UNSTOPPABLE"], [40, "MONSTER KILL"], [50, "GOD-LIKE"], [75, "LEGENDARY"], [100, "MANIAC"]];
+const STREAKS: Ladder = [[50, "DOUBLE KILL"], [75, "TRIPLE KILL"], [100, "MANIAC"]]; // at, in hundredths of MANIAC's combo
 /** MANIAC needs this share of the chart's best possible combo in one unbroken streak. Raise it to make the top call rarer. */
 export const MANIAC_SHARE = 0.5;
 /** The streak ladder scaled to one chart, so every call is reachable on short and easy charts too. Thresholds start at 2 (1 is first blood) and always rise. */
@@ -340,8 +340,8 @@ export function streakLadder(notes: Note[]): Ladder {
   return STREAKS.map(([at, call]) => [(prev = Math.max(prev + 1, Math.round(at * scale))), call]);
 }
 export function announce(prev: Score, s: Score, ladder: Ladder): string | null {
-  const spree = ladder[0][0], legendary = ladder[ladder.length - 2][0], maniac = ladder[ladder.length - 1][0];
-  if (s.combo === 0) return prev.combo >= legendary ? "SHUTDOWN" : prev.combo >= spree ? "COMBO BREAK" : null;
+  const double = ladder[0][0], triple = ladder[ladder.length - 2][0], maniac = ladder[ladder.length - 1][0];
+  if (s.combo === 0) return prev.combo >= triple ? "SHUTDOWN" : prev.combo >= double ? "COMBO BREAK" : null;
   if (s.combo === 1) return prev.maxCombo ? null : "FIRST BLOOD";
   const every = Math.max(1, Math.round(maniac / 2)); // past the ladder: maniac again every half-ladder
   return ladder.find(([at]) => at === s.combo)?.[1] ?? (s.combo > maniac && (s.combo - maniac) % every === 0 ? "MANIAC" : null);

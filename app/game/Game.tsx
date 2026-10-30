@@ -96,7 +96,7 @@ function burst(r: Run, x: number, y: number, color: string, n: number, speed: nu
 /** accent colour and emblem tier (0 swords, 1 adds wings, 2 adds flames); unlisted calls are gold tier 0 */
 const SHOUT: Record<string, [color: string, tier: number]> = {
   "FIRST BLOOD": ["#ff7a3d", 0], "COMBO BREAK": [COLOR.miss, 0], SHUTDOWN: [COLOR.miss, 0],
-  "MONSTER KILL": [COLOR.perfect, 1], "GOD-LIKE": [COLOR.perfect, 1], LEGENDARY: [COLOR.perfect, 2], MANIAC: ["#f472b6", 2], SAVAGE: [COLOR.great, 2],
+  "DOUBLE KILL": [COLOR.perfect, 1], "TRIPLE KILL": [COLOR.perfect, 2], MANIAC: ["#f472b6", 2], SAVAGE: [COLOR.great, 2],
 };
 /** MLBB kill plate: your combo on the left, the chip you took (or lost to) on the right; no chip shows a star. */
 function callout(hud: Hud, text: string | null, sub: string, combo: number, chip?: NoteType, lost = false) {
@@ -378,10 +378,12 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
       return ctx.decodeAudioData(await res.arrayBuffer());
     };
     const lyrics = fetch(`/lyrics/${song}.lrc`).then((res) => (res.ok ? res.text() : "")).catch(() => ""); // optional: no file, no lyrics
-    Promise.all([loadPhotos(), lyrics, load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
-      .then(([, lrc, songBuf, ...fx]) => {
+    // the chart saved in public/charts, so every device plays the same one: charted on load, it shifts with the audio's sample rate
+    const saved = fetch(`/charts/${song}-${difficulty}.json`).then((res) => (res.ok ? (res.json() as Promise<Chart>) : null)).catch(() => null);
+    Promise.all([loadPhotos(), lyrics, saved, load(`/sounds/${song}.m4a`), ...SFX.map((n) => load(`/sounds/${n}.wav`))])
+      .then(([, lrc, savedChart, songBuf, ...fx]) => {
         if (cancelled) return;
-        const chart = buildChart(downmix(songBuf), songBuf.sampleRate, song, difficulty);
+        const chart = savedChart ?? buildChart(downmix(songBuf), songBuf.sampleRate, song, difficulty); // no saved chart: a new song still plays
         run.current = {
           ctx, song: songBuf, sfx: Object.fromEntries(SFX.map((n, i) => [n, fx[i]])) as Record<Sfx, AudioBuffer>,
           chart, status: new Uint8Array(chart.notes.length), score: initialScore(), startAt: Infinity,
@@ -476,7 +478,6 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
   const overlay = "absolute inset-0 flex flex-col items-center justify-center gap-5 bg-black/70 p-6 text-center backdrop-blur-sm";
   const btn = "flex items-center gap-2 rounded-xl border-2 border-[#ff3b3b]/80 bg-[#2a070c]/75 px-4 py-2 text-xs font-bold tracking-widest text-white shadow-[0_0_14px_rgba(255,45,45,.45)] backdrop-blur hover:bg-[#4a0d16]/85";
   const dot = (color: string) => <i className="mr-2 inline-block h-3 w-3 rounded-full align-middle" style={{ background: color }} />;
-  const [firstAt, first] = ladder[0], [topAt, top] = ladder[ladder.length - 1];
   return (
     <div ref={rootRef} className="fixed inset-0 select-none overflow-hidden bg-black font-sans text-white">
       <canvas ref={canvasRef} className="h-full w-full touch-none" onPointerDown={onDown} onPointerUp={onUp} onPointerCancel={onUp} />
@@ -531,7 +532,9 @@ export default function Game({ song, difficulty, sync, onDone, onQuit }: {
               </p>
               <p className="text-sm text-white/60">Hit {FEVER_COMBO} in a row for <b style={{ color: COLOR.perfect }}>FEVER ×2</b>. Misses cost life.</p>
               <p className="text-sm text-white/60">
-                Hit {firstAt} in a row for <b style={{ color: COLOR.perfect }}>{first}</b>, {topAt} for <b style={{ color: COLOR.perfect }}>{top}</b>. Clear with no misses for <b style={{ color: COLOR.great }}>SAVAGE</b>.
+                Your first hit is <b style={{ color: COLOR.perfect }}>FIRST BLOOD</b>.{" "}
+                {ladder.map(([at, call], i) => <span key={call}>{i ? ", " : ""}{at}{i ? "" : " in a row"} for <b style={{ color: COLOR.perfect }}>{call}</b></span>)}.
+                {" "}Clear with no misses for <b style={{ color: COLOR.great }}>SAVAGE</b>.
               </p>
             </div>
           </div>
